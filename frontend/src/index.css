@@ -1,0 +1,212 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-crimson:    #FF003C;
+  --color-lime:       #00FF9C;
+  --color-holo:       #00F0FF;
+  --color-amber:      #FFB300;
+
+  --color-primary:             #ffb3b2;
+  --color-primary-container:   #ff525c;
+  --color-on-primary:          #680012;
+  --color-secondary:           #f5fff4;
+  --color-secondary-container: #19ff9d;
+  --color-tertiary:            #00dbe9;
+
+  --color-bg:               #0d0505;
+  --color-bg-loading:       #210e0e;
+  --color-surface:          #150808;
+  --color-surface-container:#2e1a1a;
+  --color-surface-low:      #1b0909;
+  --color-surface-low2:     #2a1616;
+
+  --color-on-surface:         #ffdad8;
+  --color-on-surface-variant: #e9bcba;
+  --color-outline:            #af8786;
+  --color-outline-variant:    #5f3e3e;
+
+  --font-mono:    'JetBrains Mono', monospace;
+  --font-display: 'Space Grotesk', sans-serif;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  width: 100vw; height: 100vh;
+  margin: 0; padding: 0;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+  background: #0d0505;
+  color: #ffdad8;
+  user-select: none;
+}
+
+/* ── Material Icons ─────────────────────────────────────────────── */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ── Scanlines ──────────────────────────────────────────────────── */
+.scanline-overlay {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(255, 179, 178, 0.03) 2px,
+    rgba(255, 179, 178, 0.03) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── Glitch ─────────────────────────────────────────────────────── */
+.glitch-text { position: relative; display: inline-block; }
+.glitch-text::before,
+.glitch-text::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  opacity: 0.75;
+}
+.glitch-text::before {
+  left: 3px;
+  text-shadow: -2px 0 #FF003C;
+  animation: glitch-1 3s infinite steps(1);
+}
+.glitch-text::after {
+  left: -3px;
+  text-shadow: 2px 0 #00F0FF;
+  animation: glitch-2 2.5s infinite steps(1) alternate-reverse;
+}
+@keyframes glitch-1 {
+  0%   { clip-path: inset(10% 0 80% 0); }
+  20%  { clip-path: inset(60% 0 15% 0); }
+  40%  { clip-path: inset(30% 0 50% 0); }
+  60%  { clip-path: inset(75% 0 5%  0); }
+  80%  { clip-path: inset(5%  0 70% 0); }
+  100% { clip-path: inset(45% 0 35% 0); }
+}
+@keyframes glitch-2 {
+  0%   { clip-path: inset(65% 0 10% 0); }
+  25%  { clip-path: inset(20% 0 60% 0); }
+  50%  { clip-path: inset(80% 0 5%  0); }
+  75%  { clip-path: inset(35% 0 45% 0); }
+  100% { clip-path: inset(5%  0 80% 0); }
+}
+
+/* ── Chamfer (cyber button shape) ───────────────────────────────── */
+.cyber-chamfer {
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+.cyber-chamfer-sm {
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+
+/* ── Spinning rings ─────────────────────────────────────────────── */
+@keyframes spin-cw  { to { transform: rotate( 360deg); } }
+@keyframes spin-ccw { to { transform: rotate(-360deg); } }
+.spin-slow    { animation: spin-cw   8s linear infinite; }
+.spin-medium  { animation: spin-cw   5s linear infinite; }
+.spin-ccw     { animation: spin-ccw 12s linear infinite; }
+.spin-ccw-med { animation: spin-ccw  7s linear infinite; }
+
+/* ── Typewriter ─────────────────────────────────────────────────── */
+.typewriter {
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 2px solid #ffb3b2;
+  animation: typing 2.5s steps(50, end), blink-caret 0.75s step-end infinite;
+}
+@keyframes typing    { from { width: 0 } to { width: 100% } }
+@keyframes blink-caret { from, to { border-color: transparent } 50% { border-color: #ffb3b2; } }
+
+/* ── Scrollbar ──────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: #1b0909; }
+::-webkit-scrollbar-thumb { background: #FF003C; border-radius: 2px; }
+
+/* ── Scan-across bar ────────────────────────────────────────────── */
+@keyframes scan-across {
+  from { left: -50%; }
+  to   { left: 150%; }
+}
+.scan-across { animation: scan-across 1.4s linear infinite; }
+
+/* ── Pulse (logo ring) ──────────────────────────────────────────── */
+@keyframes pulse-ring {
+  0%, 100% { opacity: 0.8;  transform: scale(1);    }
+  50%       { opacity: 0.25; transform: scale(1.15); }
+}
+.pulse-ring { animation: pulse-ring 2.2s ease-in-out infinite; }
+
+/* ── Fade in ────────────────────────────────────────────────────── */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.fade-in { animation: fade-in 0.7s ease forwards; }
+
+/* ── Crimson primary button ─────────────────────────────────────── */
+.btn-crimson {
+  background: #FF003C;
+  color: #000;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  border: 2px solid transparent;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.3s;
+}
+.btn-crimson:hover {
+  border-color: #00FF9C;
+  box-shadow: 0 0 28px rgba(255,0,60,0.6), inset 0 0 10px rgba(0,255,156,0.1);
+}
+.btn-crimson .sweep {
+  position: absolute; inset: 0;
+  background: rgba(255,255,255,0.18);
+  transform: skewX(-15deg) translateX(-150%);
+  transition: transform 0.5s ease;
+  pointer-events: none;
+}
+.btn-crimson:hover .sweep { transform: skewX(-15deg) translateX(150%); }
+
+/* ── Nav item ───────────────────────────────────────────────────── */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #af8786;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  border-radius: 2px;
+}
+.nav-item:hover { background: rgba(255,0,60,0.08); color: #e9bcba; }
+.nav-item.active {
+  background: rgba(255,0,60,0.18);
+  border-left-color: #FF003C;
+  color: #ffb3b2;
+}
+
+/* ── Input ──────────────────────────────────────────────────────── */
+.cmd-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #ffdad8;
+  letter-spacing: 0.05em;
+  width: 100%;
+}
+.cmd-input::placeholder { color: #5f3e3e; }

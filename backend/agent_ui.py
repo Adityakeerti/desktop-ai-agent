@@ -5,7 +5,7 @@ Layout:
   Left sidebar  : Arc reactor + status + quick-action buttons + history list
   Main area     : Chat bubble conversation log
   Bottom bar    : Input field (wide) + mic + send + model badge
-  Title bar     : J.A.R.V.I.S. header + minimize/maximize/close
+  Title bar     : R.A.G.E. header + minimize/maximize/close
 
 Requires:  pip install customtkinter
 Fonts:     Orbitron, JetBrains Mono (graceful fallback if missing)
@@ -18,8 +18,13 @@ import time
 import math
 import datetime
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # ── Backend wiring ────────────────────────────────────────────────────────────
-from windows_agent import ask_llm as _ask_llm_backend, execute, global_memory, speak
+import backend.windows_agent as _agent_backend
+from backend.windows_agent import ask_llm as _ask_llm_backend, execute, global_memory, speak
 
 def ask_llm(command: str):
     global_memory.add_user(command)
@@ -163,7 +168,7 @@ class AgentApp(ctk.CTk):
         ("📸 Screenshot",   "take a screenshot and save it to my desktop"),
         ("💻 Sys Info",     "get system info cpu ram and disk"),
         ("📋 Clipboard",    "get clipboard contents"),
-        ("🌐 Google",       "open chrome"),
+        ("🌐 Search",       "open https://www.google.com"),
         ("📂 Explorer",     "open explorer"),
         ("🗑️ Clear Chat",   "__clear__"),
         ("🔊 Volume 70%",   "set volume to 70"),
@@ -172,7 +177,7 @@ class AgentApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("J.A.R.V.I.S.  Windows Automation Agent")
+        self.title("R.A.G.E. (Rarely Appreciated Genius Entity)")
         self.geometry("1100x720+100+60")
         self.minsize(800, 560)
         self.resizable(True, True)
@@ -182,10 +187,10 @@ class AgentApp(ctk.CTk):
         # State
         self._status_state  = "ONLINE"
         self._history       = []        # list of (role, text, action_dict|None)
-        self._active_model  = "Groq / Gemini"
+        self._active_model  = "Ollama / GitHub"
 
         self._build_ui()
-        self._log_agent("J.A.R.V.I.S. uplink established. All systems nominal.", tag="info")
+        self._log_agent("R.A.G.E. uplink established. All systems nominal.", tag="info")
         self._log_agent("Type a command or click a quick action on the left.", tag="info")
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -238,7 +243,7 @@ class AgentApp(ctk.CTk):
         dot.pack(side="left", padx=(0, 8))
 
         ctk.CTkLabel(
-            title_frame, text="J.A.R.V.I.S.",
+            title_frame, text="R.A.G.E.",
             font=("Orbitron", 15, "bold"), text_color=CYAN,
         ).pack(side="left")
 
@@ -328,11 +333,40 @@ class AgentApp(ctk.CTk):
                      ).pack(padx=14, anchor="w")
 
         self._model_label = ctk.CTkLabel(
-            parent, text="Groq → Gemini → HF → OpenRouter",
+            parent, text="Ollama Local → Cloud → GitHub",
             font=("JetBrains Mono", 9), text_color=CYAN_DIM,
             wraplength=200,
         )
-        self._model_label.pack(padx=14, pady=(2, 10), anchor="w")
+        self._model_label.pack(padx=14, pady=(2, 6), anchor="w")
+
+        # Provider selector dropdown
+        ctk.CTkLabel(parent, text="ACTIVE PROVIDER",
+                     font=("JetBrains Mono", 9), text_color=TEXT_DIM,
+                     ).pack(padx=14, anchor="w")
+
+        provider_names = ["Auto (Fallback)"] + [name for name, _ in _agent_backend.PROVIDERS]
+        self._provider_var = ctk.StringVar(value="Auto (Fallback)")
+
+        def _on_provider_change(choice: str):
+            _agent_backend.SELECTED_PROVIDER = None if choice == "Auto (Fallback)" else choice
+            print(f"  [UI] Provider pinned to: {choice}")
+
+        ctk.CTkOptionMenu(
+            parent,
+            values=provider_names,
+            variable=self._provider_var,
+            command=_on_provider_change,
+            font=("JetBrains Mono", 10),
+            fg_color=BG_SIDEBAR,
+            button_color=CYAN_DARK,
+            button_hover_color=CYAN_DIM,
+            text_color=TEXT_MID,
+            dropdown_fg_color=BG_DEEP,
+            dropdown_text_color=TEXT_MID,
+            dropdown_hover_color=CYAN_DARK,
+            anchor="w",
+            width=190,
+        ).pack(padx=14, pady=(2, 10), anchor="w")
 
         # Bottom: clear memory + version
         ctk.CTkFrame(parent, fg_color=BORDER, height=1).pack(fill="x", padx=16)
@@ -343,7 +377,7 @@ class AgentApp(ctk.CTk):
             command=self._clear_memory,
         ).pack(fill="x", padx=8, pady=6)
 
-        ctk.CTkLabel(parent, text="v2.0  |  J.A.R.V.I.S.",
+        ctk.CTkLabel(parent, text="v2.0  |  R.A.G.E.",
                      font=("JetBrains Mono", 8), text_color=TEXT_DIM,
                      ).pack(side="bottom", pady=8)
 

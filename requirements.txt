@@ -14,3 +14,4 @@ python-dotenv
 # pyaudio is needed for microphone (voice mode)
 # Install separately: pip install pipwin && pipwin install pyaudio
 
+pywebview

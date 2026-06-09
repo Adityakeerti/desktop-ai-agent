@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "windows-automation-agent"
 version = "2.0.0"
-description = "A Windows automation GUI agent for local development and testing."
+description = "R.A.G.E. — a Windows automation agent with a React/pywebview UI and a CustomTkinter fallback."
 readme = "README.md"
 license = { text = "MIT" }
-authors = [ { name = "Windows Automation Team" } ]
-keywords = ["windows", "automation", "agent", "gui"]
+authors = [{ name = "Windows Automation Team" }]
+keywords = ["windows", "automation", "agent", "llm", "pywebview", "react"]
 requires-python = ">=3.11"
 dependencies = [
     "pyautogui",
@@ -25,13 +25,17 @@ dependencies = [
     "pycaw",
     "comtypes",
     "python-dotenv",
+    "pywebview",
 ]
 
 [project.optional-dependencies]
 audio = ["pipwin", "pyaudio"]
-dev = [
-    "pytest",
-    "ruff",
-    "black",
-    "flake8",
-]
+dev   = ["pytest", "ruff", "black", "flake8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*"]
+
+[project.scripts]
+rage-webview = "scripts.run_webview:main"
+rage-ui      = "backend.agent_ui:main"

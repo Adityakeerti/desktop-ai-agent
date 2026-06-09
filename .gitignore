@@ -1,34 +1,46 @@
-# Python artifacts
+# ── Python artifacts ──────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 .python-version
+*.pyo
 
-# Virtual environments
+# ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
 ENV/
 env/
 
-# Distribution / packaging
+# ── Distribution / packaging ──────────────────────────────────────────────────
 build/
 dist/
 *.egg-info/
 pip-wheel-metadata/
 
-# Environment variables
+# ── Environment variables ─────────────────────────────────────────────────────
 .env
 .env.*
+!.env.example
 
-# Logs
+# ── Logs & debug output ───────────────────────────────────────────────────────
 debug_logs/
 *.log
 
-# IDE / editor
+# ── Frontend build artefacts ──────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
+*.swo
 
-# OS files
+# ── OS files ──────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+
+# ── Screenshots saved by the agent ───────────────────────────────────────────
+*.png
+*.jpg
