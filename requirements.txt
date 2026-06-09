@@ -1,0 +1,16 @@
+pyautogui
+pygetwindow
+SpeechRecognition
+pyttsx3
+requests
+uiautomation
+customtkinter
+pyperclip
+psutil
+pywin32
+pycaw
+comtypes
+python-dotenv
+# pyaudio is needed for microphone (voice mode)
+# Install separately: pip install pipwin && pipwin install pyaudio
+

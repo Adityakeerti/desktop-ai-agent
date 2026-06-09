@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windows-automation-agent"
+version = "2.0.0"
+description = "A Windows automation GUI agent for local development and testing."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [ { name = "Windows Automation Team" } ]
+keywords = ["windows", "automation", "agent", "gui"]
+requires-python = ">=3.11"
+dependencies = [
+    "pyautogui",
+    "pygetwindow",
+    "SpeechRecognition",
+    "pyttsx3",
+    "requests",
+    "uiautomation",
+    "customtkinter",
+    "pyperclip",
+    "psutil",
+    "pywin32",
+    "pycaw",
+    "comtypes",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+audio = ["pipwin", "pyaudio"]
+dev = [
+    "pytest",
+    "ruff",
+    "black",
+    "flake8",
+]
