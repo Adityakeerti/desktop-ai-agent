@@ -196,7 +196,7 @@ void main(){
 
       {/* Initiate Button */}
       <div style={{ zIndex: 2, marginTop: 36 }}>
-        <button onClick={handleUplink} className="btn-crimson cyber-chamfer flex items-center gap-2" style={{ padding: '14px 36px', fontSize: 12 }}>
+        <button type="button" onClick={(e) => { e.preventDefault(); handleUplink(); }} className="btn-crimson cyber-chamfer flex items-center gap-2" style={{ padding: '14px 36px', fontSize: 12 }}>
           <div className="sweep" />
           <span className="material-symbols-outlined" style={{ fontSize: 18 }}>bolt</span>
           INITIATE UPLINK

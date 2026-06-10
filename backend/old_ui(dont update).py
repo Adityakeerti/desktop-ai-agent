@@ -455,6 +455,15 @@ class AgentApp(ctk.CTk):
         self._entry.bind("<Down>",   self._history_down)
         self._history_idx = -1
 
+        self._mic_btn = ctk.CTkButton(
+            inner, text="🎤", width=42, height=42,
+            fg_color=BG_PANEL, hover_color=CYAN_DARK,
+            text_color=CYAN, font=("Segoe UI", 18),
+            corner_radius=8,
+            command=self._toggle_listen,
+        )
+        self._mic_btn.grid(row=0, column=1, padx=(0, 8))
+
         self._run_btn = ctk.CTkButton(
             inner, text="EXECUTE ▶", width=110, height=42,
             fg_color=CYAN, hover_color=CYAN_DIM,
@@ -462,7 +471,7 @@ class AgentApp(ctk.CTk):
             corner_radius=8,
             command=self._submit,
         )
-        self._run_btn.grid(row=0, column=1)
+        self._run_btn.grid(row=0, column=2)
 
     # ── Drag ─────────────────────────────────────────────────────────────────
     def _drag_start(self, e):
@@ -573,6 +582,26 @@ class AgentApp(ctk.CTk):
         icon = {"ONLINE": "●", "PROCESSING": "◎", "LISTENING": "◉",
                 "SUCCESS": "✓", "FAILED": "✗"}.get(text, "●")
         self._status_label.configure(text=f"{icon} {text}", text_color=color)
+
+    # ── Voice pipeline ────────────────────────────────────────────────────────
+    def _toggle_listen(self):
+        self._mic_btn.configure(state="disabled", fg_color=CYAN_DIM)
+        self._set_status("LISTENING", AMBER)
+        threading.Thread(target=self._listen_worker, daemon=True).start()
+
+    def _listen_worker(self):
+        try:
+            from backend.windows_agent import listen
+            text = listen()
+            if text:
+                self.after(0, lambda: self._entry.delete(0, "end"))
+                self.after(0, lambda: self._entry.insert(0, text))
+                self.after(0, self._submit)
+        except Exception as e:
+            self.after(0, lambda e=e: self._log_agent(f"Voice error: {e}", tag="err_tag"))
+        finally:
+            self.after(0, lambda: self._mic_btn.configure(state="normal", fg_color=BG_PANEL))
+            self.after(0, lambda: self._set_status("ONLINE", CYAN))
 
     # ── Submit pipeline ───────────────────────────────────────────────────────
     def _submit_direct(self, cmd: str):

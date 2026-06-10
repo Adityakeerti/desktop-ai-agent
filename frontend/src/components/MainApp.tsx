@@ -15,6 +15,10 @@ declare global {
         get_system_info_quick: ()         => Promise<{ cpu: number|string; ram_used: number|string; ram_total: number|string; ram_pct: number|string }>;
         save_chat_log      : (t: string)  => Promise<string>;
         close_window       : ()           => Promise<void>;
+        minimize_window    : ()           => Promise<void>;
+        listen             : ()           => Promise<string>;
+        toggle_fullscreen  : ()           => Promise<boolean>;
+        is_fullscreen      : ()           => Promise<boolean>;
       };
     };
   }
@@ -99,6 +103,8 @@ export default function MainApp() {
   const [activeProvider, setActiveProvider] = useState('Auto (Fallback)');
   const [micActive, setMicActive]   = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
+  const [showMicModal, setShowMicModal]     = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const chatEndRef   = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
   const msgCounter   = useRef(0);
@@ -234,25 +240,97 @@ export default function MainApp() {
   }
 
   /* ── Mic / Voice input ────────────────────────────────────────────────── */
-  function toggleMic() {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) {
-      addMsg('sys', '⚠ Web Speech API not available in this browser/WebView.');
+  async function toggleMic(forceAuthorized = false) {
+    if (micActive) return;
+
+    if (!forceAuthorized && localStorage.getItem('rage_mic_perm') !== 'true') {
+      setShowMicModal(true);
       return;
     }
-    if (micActive) { setMicActive(false); return; }
-    setMicActive(true);
-    const rec = new SR();
-    rec.lang = 'en-US';
-    rec.interimResults = false;
-    rec.onresult = (ev: any) => {
-      const transcript = ev.results[0][0].transcript;
-      setInput(transcript);
-      setMicActive(false);
-    };
-    rec.onerror = () => setMicActive(false);
-    rec.onend   = () => setMicActive(false);
-    rec.start();
+
+    if (apiAvailable() && window.pywebview?.api?.listen) {
+      setMicActive(true);
+      try {
+        const text = await window.pywebview.api.listen();
+        if (text && !text.startsWith("Error:")) {
+          setInput('');  // clear any previous typed input
+          submitCommand(text); // automatically submit
+        } else if (text?.startsWith("Error:")) {
+          addMsg('error', text);
+        }
+      } catch (err: any) {
+        addMsg('error', `Voice input failed: ${err.message}`);
+      } finally {
+        setMicActive(false);
+      }
+    } else {
+      // Fallback for browser testing
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SR) {
+        addMsg('sys', '⚠ Web Speech API / Backend Listen not available.');
+        return;
+      }
+      setMicActive(true);
+      const rec = new SR();
+      rec.lang = 'en-US';
+      rec.interimResults = false;
+      rec.onresult = (ev: any) => {
+        const transcript = ev.results[0][0].transcript;
+        setInput('');
+        submitCommand(transcript);
+        setMicActive(false);
+      };
+      rec.onerror = () => setMicActive(false);
+      rec.onend   = () => setMicActive(false);
+      rec.start();
+    }
+  }
+
+  /* ── Global Keydown Listener (Fullscreen escape hatch) ────────────────── */
+  useEffect(() => {
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === 'Escape' && isFullscreen) {
+        e.preventDefault();
+        toggleFullscreen();
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isFullscreen]);
+
+  /* ── Toggle fullscreen ──────────────────────────────────────────────── */
+  async function toggleFullscreen() {
+    if (apiAvailable() && window.pywebview?.api.toggle_fullscreen) {
+      await window.pywebview.api.toggle_fullscreen();
+      setIsFullscreen(f => !f);
+    } else {
+      // Dev mode fallback
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+        setIsFullscreen(true);
+      } else {
+        document.exitFullscreen().catch(() => {});
+        setIsFullscreen(false);
+      }
+    }
+  }
+
+  /* ── Window Controls ────────────────────────────────────────────────── */
+  function minimizeWindow() {
+    if (apiAvailable() && window.pywebview?.api.minimize_window) {
+      window.pywebview.api.minimize_window();
+    }
+  }
+
+  function closeWindow() {
+    if (apiAvailable() && window.pywebview?.api.close_window) {
+      window.pywebview.api.close_window();
+    } else {
+      window.close();
+    }
   }
 
   /* ── Save chat log ────────────────────────────────────────────────────── */
@@ -262,15 +340,6 @@ export default function MainApp() {
       window.pywebview!.api.save_chat_log(text).then(msg => addMsg('sys', msg)).catch(() => {});
     } else {
       navigator.clipboard.writeText(text).then(() => addMsg('sys', 'Chat log copied to clipboard.'));
-    }
-  }
-
-  /* ── Close window ─────────────────────────────────────────────────────── */
-  function closeWindow() {
-    if (apiAvailable()) {
-      window.pywebview!.api.close_window().catch(() => {});
-    } else {
-      window.close();
     }
   }
 
@@ -594,65 +663,93 @@ export default function MainApp() {
         </div>
       )}
 
-      {/* ═══ TITLE BAR ════════════════════════════════════════════════ */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4"
-           style={{ height: 34, background: '#150808', borderBottom: '1px solid rgba(255,0,60,0.25)' }}>
-        <div className="flex items-center gap-2">
-          <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#FF003C', boxShadow: '0 0 6px #FF003C' }} />
-          <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, fontWeight: 700, color: '#ffb3b2', letterSpacing: '0.15em' }}>
-            RAGE // COMMAND_OS
-          </span>
-          <span style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#7a5555', letterSpacing: '0.05em', marginLeft: 8 }}>
-            v2.0
-          </span>
+      {/* ═══ MIC PERMISSION MODAL ═════════════════════════════════════ */}
+      {showMicModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ padding: 32, background: '#150808', border: '1px solid rgba(0,255,156,0.35)', fontFamily: 'JetBrains Mono', maxWidth: 380, width: '90%' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#00FF9C', marginBottom: 10 }}>MICROPHONE ACCESS UPLINK</div>
+            <div style={{ fontSize: 11, color: '#9a7070', marginBottom: 24 }}>R.A.G.E. requires local microphone access for voice telemetry. Do you authorize this uplink?</div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button onClick={() => { localStorage.setItem('rage_mic_perm', 'true'); setShowMicModal(false); toggleMic(true); }} style={{ flex: 1, padding: '10px', background: 'rgba(0,255,156,0.15)', border: '1px solid rgba(0,255,156,0.4)', color: '#00FF9C', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 11, fontWeight: 700 }}>AUTHORIZE</button>
+              <button onClick={() => setShowMicModal(false)} style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid rgba(154,112,112,0.4)', color: '#9a7070', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 11 }}>DENY</button>
+            </div>
+          </div>
         </div>
+      )}
 
-        {/* ── LLM Provider Dropdown ── */}
-        <div className="flex items-center gap-2" style={{ fontFamily: 'JetBrains Mono', fontSize: 9 }}>
-          <span style={{ color: '#9a7070', letterSpacing: '0.08em' }}>LLM_PROVIDER:</span>
-          <select
-            value={activeProvider}
-            onChange={handleProviderChange}
-            style={{
-              background: '#1b0909', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2',
-              fontFamily: 'JetBrains Mono', fontSize: 9, padding: '2px 6px', cursor: 'pointer',
-              letterSpacing: '0.06em', outline: 'none',
-            }}
-          >
-            {providers.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </div>
+      {/* ═══ TITLE BAR (drag region for frameless window) ═══════════ */}
+      {!isFullscreen && (
+        <div
+          className="flex-shrink-0 flex items-center justify-between px-4 pywebview-drag-region"
+          style={{ height: 34, background: '#150808', borderBottom: '1px solid rgba(255,0,60,0.25)', WebkitAppRegion: 'drag' } as any}
+        >
+          {/* Title — drag area */}
+          <div className="flex items-center gap-2" style={{ pointerEvents: 'none' }}>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#FF003C', boxShadow: '0 0 6px #FF003C' }} />
+            <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, fontWeight: 700, color: '#ffb3b2', letterSpacing: '0.15em' }}>
+              RAGE // COMMAND_OS
+            </span>
+            <span style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#7a5555', letterSpacing: '0.05em', marginLeft: 8 }}>
+              v2.0
+            </span>
+          </div>
 
-        <div className="flex items-center gap-2">
-          {/* save chat log */}
-          <button
-            title="Save chat log to clipboard"
-            onClick={saveChatLog}
-            className="material-symbols-outlined"
-            style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#00dbe9'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
-          >download</button>
-          {/* clear memory */}
-          <button
-            title="Clear memory & chat"
-            onClick={() => setShowClearModal(true)}
-            className="material-symbols-outlined"
-            style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ff525c'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
-          >delete_sweep</button>
-          {/* close window */}
-          <button
-            title="Close window"
-            onClick={closeWindow}
-            className="material-symbols-outlined"
-            style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ff525c'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
-          >power_settings_new</button>
+
+          <div className="flex items-center gap-2 h-full" style={{ WebkitAppRegion: 'no-drag' } as any}>
+            {/* save chat log */}
+            <button
+              title="Save chat log to clipboard"
+              onClick={saveChatLog}
+              className="material-symbols-outlined h-full flex items-center"
+              style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#00dbe9'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
+            >download</button>
+            
+            {/* clear memory */}
+            <button
+              title="Clear memory & chat"
+              onClick={() => setShowClearModal(true)}
+              className="material-symbols-outlined h-full flex items-center ml-2"
+              style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ff525c'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
+            >delete_sweep</button>
+
+            <div style={{ width: 1, height: 16, background: 'rgba(255,0,60,0.3)', margin: '0 8px' }} />
+
+            {/* minimize window */}
+            <button
+              title="Minimize"
+              onClick={minimizeWindow}
+              className="material-symbols-outlined h-full flex items-center"
+              style={{ fontSize: 16, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ffb3b2'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
+            >remove</button>
+
+            {/* fullscreen toggle */}
+            <button
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              onClick={toggleFullscreen}
+              className="material-symbols-outlined h-full flex items-center ml-2"
+              style={{ fontSize: 15, color: isFullscreen ? '#FF003C' : '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ffb3b2'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = isFullscreen ? '#FF003C' : '#8a6060'; }}
+            >{isFullscreen ? 'fullscreen_exit' : 'fullscreen'}</button>
+
+            {/* close window */}
+            <button
+              title="Close window"
+              onClick={closeWindow}
+              className="material-symbols-outlined h-full flex items-center ml-2"
+              style={{ fontSize: 16, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ff525c'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
+            >close</button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ═══ BODY ═════════════════════════════════════════════════════ */}
       <div className="flex flex-1 overflow-hidden">
@@ -731,7 +828,23 @@ export default function MainApp() {
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-4">
+              {/* ── LLM Provider Dropdown ── */}
+              <div className="flex items-center gap-2" style={{ fontFamily: 'JetBrains Mono', fontSize: 9 }}>
+                <span style={{ color: '#9a7070', letterSpacing: '0.08em' }}>LLM_PROVIDER:</span>
+                <select
+                  value={activeProvider}
+                  onChange={handleProviderChange}
+                  style={{
+                    background: '#1b0909', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2',
+                    fontFamily: 'JetBrains Mono', fontSize: 9, padding: '2px 6px', cursor: 'pointer',
+                    letterSpacing: '0.06em', outline: 'none',
+                  }}
+                >
+                  {providers.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+
               {/* system diagnostics */}
               <button
                 title="Get system info (CPU / RAM / Disk)"
@@ -887,7 +1000,7 @@ export default function MainApp() {
                 {/* Mic button */}
                 <button
                   title="Voice input"
-                  onClick={toggleMic}
+                  onClick={() => toggleMic()}
                   className="material-symbols-outlined flex-shrink-0"
                   style={{
                     fontSize: 20, background: 'none', border: 'none', cursor: 'pointer',

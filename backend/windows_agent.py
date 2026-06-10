@@ -28,6 +28,9 @@ import pyautogui
 import pygetwindow as gw
 import speech_recognition as sr
 import pyttsx3
+import sounddevice as sd
+import numpy as np
+from scipy.io.wavfile import write as wav_write
 import uiautomation as auto
 import urllib.parse
 from collections import deque
@@ -1038,12 +1041,69 @@ def speak(text: str):
 
 
 def listen() -> str:
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("  [VOICE] Listening...")
-        r.adjust_for_ambient_noise(source, duration=0.5)
-        audio = r.listen(source, timeout=5)
-    return r.recognize_google(audio)
+    print("  [VOICE] Listening...")
+    sample_rate = 16000
+    max_duration = 10
+    silence_limit = 1.5  # stop after 1.5s of silence
+    chunk_duration = 0.1 # 100ms chunks
+    chunk_size = int(sample_rate * chunk_duration)
+    silence_limit_chunks = int(silence_limit / chunk_duration)
+    
+    device_id = None
+    env_device = os.getenv("STT_DEVICE_ID")
+    if env_device and env_device.strip().isdigit():
+        device_id = int(env_device.strip())
+        
+    audio_buffer = []
+    has_spoken = False
+    silent_chunks = 0
+    threshold = 500  # Default fallback threshold
+    
+    try:
+        with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', device=device_id) as stream:
+            for i in range(int(max_duration / chunk_duration)):
+                chunk, _ = stream.read(chunk_size)
+                audio_buffer.append(chunk)
+                
+                # Use max amplitude in the chunk as volume indicator
+                volume = np.max(np.abs(chunk))
+                
+                # Adaptive threshold calibration based on first 0.5s of audio
+                if i == 4:
+                    avg_noise = np.mean([np.max(np.abs(c)) for c in audio_buffer[:5]])
+                    threshold = max(400, avg_noise * 2.5)  # 2.5x ambient noise, min 400
+                    
+                if i >= 5:
+                    if volume > threshold:
+                        has_spoken = True
+                        silent_chunks = 0
+                    elif has_spoken:
+                        silent_chunks += 1
+                        
+                    # Stop early if speech was detected followed by silence
+                    if has_spoken and silent_chunks > silence_limit_chunks:
+                        break
+
+        audio_data = np.concatenate(audio_buffer, axis=0)
+        
+        wav_path = "temp_voice.wav"
+        wav_write(wav_path, sample_rate, audio_data)
+        
+        r = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio = r.record(source)
+            
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
+            
+        return r.recognize_google(audio)
+    except sr.UnknownValueError:
+        return ""
+    except Exception as e:
+        print(f"  [VOICE] Error: {e}")
+        return ""
 
 
 # ──────────────────────────────────────────────────────────────
