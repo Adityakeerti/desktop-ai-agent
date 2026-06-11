@@ -24,7 +24,10 @@ Type (or speak) a natural language command — R.A.G.E. routes it through a mult
 windows_automation_agent/
 ├── backend/
 │   ├── __init__.py          # makes backend a package
-│   ├── windows_agent.py     # core engine: LLM routing, action dispatcher, memory
+│   ├── windows_agent.py     # core engine: LLM routing, action dispatcher
+│   ├── memory.py            # SQLite persistent memory, interaction history, macros [NEW]
+│   ├── safety.py            # blocklist validator, sandbox, emergency stop hotkey [NEW]
+│   ├── hooks.py             # startup registry, summon hotkey, system tray, observers [NEW]
 │   └── agent_ui.py          # CustomTkinter GUI (Arc Reactor UI)
 ├── frontend/                # React + Vite + TypeScript UI
 │   ├── src/
@@ -35,6 +38,8 @@ windows_automation_agent/
 │   └── package.json
 ├── scripts/
 │   └── run_webview.py       # pywebview launcher — serves frontend/dist/ with Python API bridge
+├── tests/
+│   └── test_safety_and_memory.py # safety, sandbox, and SQLite memory unit tests [NEW]
 ├── .env.example             # API key template
 ├── .gitignore
 ├── pyproject.toml
@@ -68,17 +73,35 @@ graph TD
         end
 
         LLM --> Parser[JSON Parser]
-        Parser --> Exec[execute: Action Dispatcher]
+        Parser --> Exec[execute: Wrapper Action Dispatcher]
+        
+        Exec --> SafetyCheck{backend/safety.py\nBlocklist / Sandbox?}
+        SafetyCheck -- Pass --> RealExec[_execute_core]
+        SafetyCheck -- Dangerous / Sandbox --> BlockOrDryRun[Log Action & Abort/Dryrun]
+        
+        RealExec --> SQLMem[backend/memory.py\nSQLite interaction history]
+    end
+
+    subgraph WinHooks [Deep Windows Hooks - backend/hooks.py]
+        API --> BootStartup[Boot Startup Registry]
+        API --> Summon[Summon / Toggle Hotkey]
+        API --> Tray[Win32 System Tray Icon]
+        
+        Clipboard[Clipboard Observer] -- URL / Path --> WebUI
+        Downloads[Downloads Watcher] -- Auto-Organize extension --> WebUI
+        Toasts[Toast Notification Db Observer] -- XML parsed Toast --> WebUI
     end
 
     subgraph OS [OS Automation]
-        Exec --> PyAutoGUI[pyautogui\nMouse / Keyboard]
-        Exec --> Win32[win32gui / win32clipboard]
-        Exec --> Pycaw[pycaw / CoreAudio\nVolume]
-        Exec --> UIAuto[uiautomation\nUI Controls]
-        Exec --> PS[subprocess\nCmd / PowerShell]
-        Exec --> FS[os / shutil / zipfile\nFile System]
+        RealExec --> PyAutoGUI[pyautogui\nMouse / Keyboard]
+        RealExec --> Win32[win32gui / win32clipboard]
+        RealExec --> Pycaw[pycaw / CoreAudio\nVolume]
+        RealExec --> UIAuto[uiautomation\nUI Controls]
+        RealExec --> PS[subprocess\nTracked Popen processes]
+        RealExec --> FS[os / shutil / zipfile\nFile System]
     end
+    
+    Emergency[Emergency Stop: Ctrl+Shift+X] --> KillProc[Kill Tracked Processes & Abort]
 ```
 
 ---
@@ -152,13 +175,15 @@ cd ..
 
 ---
 
-## ⌨️ Keyboard Shortcuts (Webview UI)
+## ⌨️ Keyboard Shortcuts (Webview & System)
 
-| Shortcut | Action |
-|---|---|
-| `Enter` | Send command |
-| `↑ / ↓` | Cycle through command history |
-| `Ctrl+K` | Focus the command input from anywhere |
+| Shortcut | Scope | Action |
+|---|---|---|
+| `Enter` | Webview | Send command |
+| `↑ / ↓` | Webview | Cycle through command history |
+| `Ctrl+K` | Webview | Focus the command input from anywhere |
+| `Ctrl+Shift+Space` | Global System | **Summon / Minimize** R.A.G.E. window toggler |
+| `Ctrl+Shift+X` | Global System | **Emergency Stop** (instantly aborts executions & kills active subprocesses) |
 
 ---
 
@@ -187,6 +212,27 @@ The title bar contains a **LLM_PROVIDER** selector. Options:
 | Notepad | `open notepad` |
 | Volume 70% | `set volume to 70` |
 | Task Mgr | `open task manager` |
+
+---
+
+## 🧠 Memory, Safety & Windows Hooks (v2.1)
+
+### 1. Memory Layer
+* **interaction_history**: Automatically records user commands to SQLite database to track frequencies and optimize execution paths over time.
+* **Macros (Skills)**: Bundle multi-step actions together! Save recent actions by saying `"save this as <macro_name>"` or `"save last 3 actions as <macro_name>"`. Trigger the macro at any time by saying `"run <macro_name>"`.
+
+### 2. Safety & Permission Layer
+* **Blocklist**: Blocks high-risk commands matching dangerous patterns (e.g. `format`, UAC modifications, recursive system deletions).
+* **Confirmations**: Displays custom confirmation dialog modals for destructive actions (like file/folder deletions) before they are sent to the executor.
+* **Sandbox Mode**: Toggle dry-runs via the Settings Modal. When Sandbox is active, commands parse normally but execute no side-effects, printing a `[SANDBOX DRY-RUN]` action description.
+* **Action logs**: Formats and appends every command, action payload, and result to local logs at `~/.jarvis/logs/YYYY-MM-DD.log`.
+
+### 3. System Integration Hooks
+* **System Tray**: Living tray agent with options to summon, toggle Sandbox Mode, toggle boot startup, or shutdown the agent.
+* **Startup on Boot**: Toggles automatic startup launch registry entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+* **Clipboard Watcher**: Background hook suggesting actions when URLs or file paths are copied.
+* **File Watcher**: Auto-organizes files downloaded to `~/Downloads` into folders (`Images`, `Documents`, `Archives`, `Installers`, `Code`) and alerts the UI.
+* **Toast Listener**: Queries the Windows notification database (`wpndatabase.db`), decodes XML payloads, and pushes incoming OS notifications to the HUD panel.
 
 ---
 

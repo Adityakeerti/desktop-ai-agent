@@ -46,6 +46,13 @@ log = logging.getLogger("windows_agent")
 # Load environment variables from .env file if present
 load_dotenv()
 
+# Absolute file paths for logging
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
+EXECUTION_LOG_PATH = os.path.join(PROJECT_ROOT, "execution_log.jsonl")
+MISSING_TOOLS_PATH = os.path.join(PROJECT_ROOT, "missing_tools.json")
+
+
 # ──────────────────────────────────────────────────────────────
 # CONFIG — API keys loaded from environment
 # ──────────────────────────────────────────────────────────────
@@ -272,9 +279,32 @@ global_memory = ConversationMemory()
 # PROMPT BUILDER
 # ──────────────────────────────────────────────────────────────
 def build_prompt(command: str, history: list = None) -> str:
+    if command.startswith("__RAW_PROMPT__:"):
+        return command[len("__RAW_PROMPT__:"):]
     history_str = ""
     if history:
         history_str = "PREVIOUS CONTEXT:\n" + "\n".join(history) + "\n\n"
+
+    # Query learned user shortcuts/preferences persistently from memory database
+    import backend.memory as memory
+    pref_str = ""
+    try:
+        prefs = memory.get_learned_preferences(limit=10)
+        if prefs:
+            pref_str = "LEARNED USER PREFERENCES (from past sessions):\n"
+            for cmd, act in prefs:
+                # Filter out meta commands or generic replies/errors to keep LLM context clean
+                if (isinstance(act, dict) and 
+                    act.get("action") not in ("reply", "unknown", "run_macro") and 
+                    not cmd.lower().startswith("save ") and 
+                    not cmd.lower().startswith("run ")):
+                    pref_str += f'User: "{cmd}"\n{json.dumps(act)}\n'
+            if pref_str != "LEARNED USER PREFERENCES (from past sessions):\n":
+                pref_str += "\n"
+            else:
+                pref_str = ""
+    except Exception:
+        pass
 
     # Fix #5 — inject actual screen resolution into prompt so LLM generates correct coords
     screen_w, screen_h = _get_screen_size()
@@ -283,9 +313,40 @@ def build_prompt(command: str, history: list = None) -> str:
     username = os.getenv("USERNAME", "User")
     home_dir = os.path.expanduser("~").replace("\\", "/")
 
-    return f"""You are JARVIS, an advanced Windows PC automation controller for {username}'s PC. Parse the user's command into ONE action JSON object.
+    # Load personalization profile
+    try:
+        import backend.memory as _mem
+        _profile = _mem.get_profile()
+    except Exception:
+        _profile = {}
 
-{history_str}CURRENT COMMAND: "{command}"
+    _user_name    = _profile.get("name", "") or username
+    _user_role    = _profile.get("role", "")
+    _interests    = _profile.get("interests", "")
+    _agent_name   = _profile.get("agent_name", "JARVIS") or "JARVIS"
+    _tone         = _profile.get("tone", "professional")
+    _custom_tone  = _profile.get("custom_tone_prompt", "")
+
+    TONE_PREAMBLES = {
+        "professional": "Respond in a professional, clear, and concise manner. Be respectful and precise.",
+        "sarcastic":    "You have a dry, sarcastic wit. You get things done efficiently but can't help making playful, slightly sarcastic remarks. Keep it fun, never mean.",
+        "corny":        "You love puns and cheesy jokes. Every reply has at least one groan-worthy pun. You're enthusiastic and dorky!",
+        "simple":       "Use extremely simple language. Short sentences. No jargon. Like explaining to a 10-year-old.",
+        "custom":       _custom_tone or "Respond helpfully.",
+    }
+    tone_line = TONE_PREAMBLES.get(_tone, TONE_PREAMBLES["professional"])
+
+    # Identity context line
+    identity_parts = []
+    if _user_role:  identity_parts.append(f"a {_user_role}")
+    if _interests:  identity_parts.append(f"interested in {_interests}")
+    identity_str = f"The user's name is {_user_name}" + (f" ({', '.join(identity_parts)})" if identity_parts else "") + "."
+
+    return f"""You are {_agent_name}, an advanced Windows PC automation controller for {_user_name}'s PC. Parse the user's command into ONE action JSON object.
+{tone_line}
+{identity_str}
+
+{history_str}{pref_str}CURRENT COMMAND: "{command}"
 
 ENVIRONMENT:
 - OS: Windows
@@ -350,6 +411,8 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"download_file","url":"https://...","path":"file.zip"}} - download a file
 
 === SYSTEM ===
+{{"action":"empty_recycle_bin"}}                                 - empty the recycle bin
+{{"action":"turn_off_wifi"}}                                     - turn off Wi-Fi
 {{"action":"run_command","value":"ipconfig /all"}}               - run shell/cmd command
 {{"action":"run_powershell","value":"Get-Process"}}              - run PowerShell command
 {{"action":"get_system_info"}}                                   - CPU/RAM/disk info
@@ -373,6 +436,11 @@ AVAILABLE ACTIONS (pick exactly one):
 === VOICE / CHAT ===
 {{"action":"say","value":"Task complete"}}                       - speak text via TTS
 {{"action":"reply","value":"I am an AI automation agent"}}       - answer conversational question
+
+=== MACROS ===
+{{"action":"create_macro","name":"morning routine","steps":["open notepad","open paint"]}} - create a new macro/skill from scratch with specified steps
+{{"action":"edit_macro","name":"coding environment","instruction":"add 'open vscode' to it"}} - edit an existing macro/skill using natural language instructions
+
 
 EXAMPLES (30 pairs — cover every action category):
 User: "Open notepad"
@@ -461,6 +529,12 @@ User: "set a reminder to drink water in 5 minutes"
 
 User: "send hi to mom"
 {{"action": "send_whatsapp", "contact": "mom", "message": "hi"}}
+
+User: "make a macro named coding enviroment: open brave, open whatsapp, play playlist"
+{{"action": "create_macro", "name": "coding enviroment", "steps": ["open brave", "open whatsapp", "play playlist"]}}
+
+User: "add open notepad to the morning routine macro"
+{{"action": "edit_macro", "name": "morning routine", "instruction": "add open notepad"}}
 
 User: "close this"
 {{"action": "reply", "value": "Which window or application would you like me to close?"}}
@@ -554,6 +628,82 @@ PROVIDERS = [
 SELECTED_PROVIDER: str = None
 
 
+# ──────────────────────────────────────────────────────────────
+# TONE PREAMBLES  (used by conversational reply)
+# ──────────────────────────────────────────────────────────────
+TONE_PREAMBLES = {
+    "professional": "Respond in a professional, clear, and concise manner. Be respectful and precise.",
+    "sarcastic":    "You have a dry, sarcastic wit. You get things done but can't help making playful, slightly sarcastic remarks. Keep it fun, never mean.",
+    "corny":        "You love puns and cheesy jokes. Every reply has at least one groan-worthy pun. You're enthusiastic and dorky!",
+    "simple":       "Use extremely simple language. Short sentences. No jargon. Explain like a 10-year-old.",
+    "custom":       "",  # filled at runtime from profile
+}
+
+
+def _build_conversational_prompt(user_message: str, history: list = None) -> str:
+    """Build a free-form conversational prompt that respects the user's tone preference."""
+    try:
+        import backend.memory as _mem
+        profile = _mem.get_profile()
+    except Exception:
+        profile = {}
+
+    import os
+    username     = os.getenv("USERNAME", "User")
+    user_name    = profile.get("name", "") or username
+    user_role    = profile.get("role", "")
+    interests    = profile.get("interests", "")
+    agent_name   = profile.get("agent_name", "JARVIS") or "JARVIS"
+    tone         = profile.get("tone", "professional")
+    custom_tone  = profile.get("custom_tone_prompt", "")
+
+    tone_text = TONE_PREAMBLES.get(tone, TONE_PREAMBLES["professional"])
+    if tone == "custom":
+        tone_text = custom_tone or "Respond helpfully."
+
+    identity_parts = []
+    if user_role:   identity_parts.append(f"a {user_role}")
+    if interests:   identity_parts.append(f"interested in {interests}")
+    identity_str = f"{user_name}" + (f" ({', '.join(identity_parts)})" if identity_parts else "")
+
+    history_str = ""
+    if history:
+        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-6:]) + "\n\n"
+
+    return f"""You are {agent_name}, an intelligent, conversational Windows automation assistant.
+{tone_text}
+You are talking to {identity_str}. Be warm, direct, and on-brand with your tone.
+Do NOT output JSON. Just reply naturally in 1-3 sentences.
+
+{history_str}User: {user_message}
+{agent_name}:"""
+
+
+def conversational_reply(user_message: str, history: list = None) -> str:
+    """Fire a pure conversational LLM call — returns a plain text reply string."""
+    raw_prompt = "__RAW_PROMPT__:" + _build_conversational_prompt(user_message, history)
+
+    if SELECTED_PROVIDER and SELECTED_PROVIDER != "Auto (Fallback)":
+        chain = [(n, fn) for n, fn in PROVIDERS if n == SELECTED_PROVIDER]
+        if not chain:
+            chain = PROVIDERS
+    else:
+        chain = PROVIDERS
+
+    for name, func in chain:
+        try:
+            result = func(raw_prompt)
+            # The LLM might still return JSON — try to extract a human reply
+            if isinstance(result, dict):
+                return result.get("value", result.get("reply", str(result)))
+            return str(result)
+        except Exception as e:
+            log.debug("conversational_reply: provider %s failed: %s", name, e)
+            import time as _t; _t.sleep(0.3)
+            continue
+    return "I'm here. What do you need?"
+
+
 def ask_llm(command: str, history: list = None) -> dict:
     """Tries providers in sequence until one succeeds.
     If SELECTED_PROVIDER is set, only that provider is tried (no fallback).
@@ -585,6 +735,60 @@ def ask_llm(command: str, history: list = None) -> dict:
     return None
 
 
+def edit_macro_steps_via_llm(name: str, steps: list[str], instruction: str) -> list[str]:
+    """Uses the active LLM provider to modify a macro's steps based on natural language instructions.
+    
+    Returns the updated list of step strings.
+    """
+    import json
+    raw_prompt = f"""You are a precise JSON list editor. Your task is to modify a given JSON list of command strings based on a plain English instruction.
+
+CURRENT MACRO STEPS:
+{json.dumps(steps, indent=2)}
+
+EDIT INSTRUCTION:
+"{instruction}"
+
+CRITICAL RULES:
+1. Respond with ONLY a valid JSON array of strings representing the modified steps. Do NOT include markdown fences, HTML, or any explanations.
+2. The elements of the array must be the updated commands.
+3. Keep the commands clean and actionable (e.g. "open notepad", "type hello").
+4. If the instruction is to delete or clear the entire macro, return an empty array `[]`.
+5. If the instruction does not make sense or doesn't describe any changes, return the original list.
+
+RESPOND WITH ONLY THE JSON ARRAY."""
+
+    if SELECTED_PROVIDER and SELECTED_PROVIDER != "Auto (Fallback)":
+        chain = [(n, fn) for n, fn in PROVIDERS if n == SELECTED_PROVIDER]
+        if not chain:
+            chain = PROVIDERS
+    else:
+        chain = PROVIDERS
+
+    for provider_name, func in chain:
+        try:
+            print(f"  [LLM] Editing macro steps with {provider_name}... ")
+            res = func("__RAW_PROMPT__:" + raw_prompt)
+            print(f"[+] Got edit result: {res}")
+            if isinstance(res, list):
+                return [str(item) for item in res]
+            elif isinstance(res, dict) and "steps" in res:
+                return [str(item) for item in res["steps"]]
+            elif isinstance(res, str):
+                parsed = json.loads(res.strip())
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+        except Exception as e:
+            print(f"[-] Failed ({type(e).__name__}: {e})")
+            import time
+            time.sleep(0.4)
+            continue
+
+    print("  [LLM] All macro edit providers failed.")
+    return steps
+
+
+
 # ──────────────────────────────────────────────────────────────
 # ACTION EXECUTOR  — v2.0 (all new actions added)
 # ──────────────────────────────────────────────────────────────
@@ -605,7 +809,92 @@ def _safe_coords(action: dict, xk="x", yk="y", default_x=500, default_y=300):
     return x, y
 
 
-def execute(action: dict) -> str:
+# ── Subprocess Tracking Patch for Emergency Stop ──────────────────────────────
+import subprocess
+_orig_popen = subprocess.Popen
+
+class TrackedPopen(_orig_popen):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        import backend.safety as safety
+        safety.track_process(self)
+        
+    def wait(self, timeout=None):
+        try:
+            return super().wait(timeout)
+        finally:
+            import backend.safety as safety
+            safety.untrack_process(self)
+            
+    def poll(self):
+        res = super().poll()
+        if res is not None:
+            import backend.safety as safety
+            safety.untrack_process(self)
+        return res
+
+subprocess.Popen = TrackedPopen
+
+
+def execute(action: dict, command: str = "") -> str:
+    """
+    Wrapper for action execution. Integrates dangerous action blocklists,
+    sandbox dry-runs, SQLite interaction logging, and daily log files.
+    """
+    import backend.safety as safety
+    import backend.memory as memory
+    
+    if safety.is_emergency_stopped():
+        return "Error: Command aborted due to Emergency Stop."
+        
+    # Destructive actions guard (require confirmation flag unless in sandbox)
+    if action.get("action") in ("delete_file", "delete_folder") and not action.get("confirmed"):
+        if not safety.is_sandbox_active():
+            abort_msg = f"Error: Action Aborted. Destructive action '{action.get('action')}' requires explicit confirmation."
+            safety.log_action(command, action, abort_msg)
+            return abort_msg
+        
+    # 1. Blocklist check
+    is_blocked, block_reason = safety.is_dangerous(action)
+    if is_blocked:
+        safety.log_action(command, action, block_reason)
+        return block_reason
+        
+    # 2. Sandbox dry-run check
+    if safety.is_sandbox_active():
+        val_str = f" with value: {action.get('value')}" if "value" in action else ""
+        dry_run_msg = f"[SANDBOX DRY-RUN] Would execute: {action.get('action')}{val_str}"
+        safety.log_action(command, action, dry_run_msg)
+        return dry_run_msg
+        
+    # 3. Record interaction in persistent SQLite memory
+    if command:
+        try:
+            memory.record_interaction(command, action)
+        except Exception:
+            pass
+            
+    # Run actual action
+    result = _execute_core(action)
+    
+    # Log missing tool automatically if the result is an unknown action
+    if result.startswith("Unknown action:"):
+        try:
+            log_missing_tool(action.get('action', '?'), command)
+        except Exception as e:
+            print(f"Error logging missing tool: {e}")
+
+    # 4. Log results to daily file
+    try:
+        safety.log_action(command, action, result)
+    except Exception:
+        pass
+        
+    return result
+
+
+
+def _execute_core(action: dict) -> str:
     """
     Execute an action dict and return a human-readable result string.
     Raises no exceptions — all errors are caught and returned as strings.
@@ -614,8 +903,91 @@ def execute(action: dict) -> str:
         a = action.get("action", "")
         v = action.get("value", "")
 
+        # ── Macros ───────────────────────────────────────────────────────────
+        if a == "create_macro":
+            name = action.get("name", "")
+            steps = action.get("steps", [])
+            if not name or not steps:
+                return "Error: Missing macro name or steps list."
+            if not isinstance(steps, list):
+                return "Error: Steps must be a JSON array of strings."
+                
+            import backend.memory as memory
+            existing = memory.get_macro(name)
+            verb = "overwritten" if existing else "created"
+            
+            try:
+                memory.save_macro(name, steps)
+            except Exception as e:
+                return f"Error: Failed to save macro '{name}': {e}"
+            try:
+                import backend.hooks as hooks
+                hooks.trigger_ui_refresh()
+            except Exception:
+                pass
+            steps_display = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(steps))
+            return f"Successfully {verb} macro '{name}'. Steps:\n{steps_display}"
+
+        elif a == "edit_macro":
+            name = action.get("name", "")
+            instruction = action.get("instruction", "")
+            if not name or not instruction:
+                return "Error: Missing macro name or instruction."
+                
+            import backend.memory as memory
+            existing_steps = memory.get_macro(name)
+            if not existing_steps:
+                return f"Error: Macro '{name}' does not exist."
+                
+            try:
+                new_steps = edit_macro_steps_via_llm(name, existing_steps, instruction)
+                # Safety guard: only delete if LLM returned [] AND the instruction
+                # explicitly requests deletion. Prevents LLM hallucination from
+                # silently wiping macros.
+                _delete_keywords = ("delete", "clear", "remove all", "wipe", "erase", "reset")
+                _explicit_delete = any(kw in instruction.lower() for kw in _delete_keywords)
+                if not new_steps:
+                    if _explicit_delete:
+                        memory.delete_macro(name)
+                        try:
+                            import backend.hooks as hooks
+                            hooks.trigger_ui_refresh()
+                        except Exception:
+                            pass
+                        return f"Macro '{name}' has been cleared and deleted."
+                    else:
+                        # LLM returned empty steps without a delete instruction —
+                        # protect the macro and return an error instead.
+                        return (f"Error: The edit returned no steps for macro '{name}'. "
+                                "The macro was NOT deleted. Please try a more specific instruction.")
+                else:
+                    try:
+                        memory.save_macro(name, new_steps)
+                    except Exception as e:
+                        return f"Error: Failed to save updated macro '{name}': {e}"
+                    try:
+                        import backend.hooks as hooks
+                        hooks.trigger_ui_refresh()
+                    except Exception:
+                        pass
+                    steps_display = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(new_steps))
+                    return f"Successfully updated macro '{name}'. Steps:\n{steps_display}"
+            except Exception as e:
+                return f"Error modifying macro: {e}"
+
+        elif a == "list_macros":
+            import backend.memory as memory
+            all_macros = memory.list_macros()
+            if not all_macros:
+                return "No macros saved yet. Try saying 'save this as morning routine' after running tasks."
+            display = []
+            for name, steps in all_macros.items():
+                steps_display = " ➔ ".join(steps)
+                display.append(f"• {name}: {steps_display}")
+            return "Saved macros:\n" + "\n".join(display)
+
         # ── App / Window ─────────────────────────────────────────────────────
-        if a == "open_app":
+        elif a == "open_app":
             app_path = _resolve_app_path(str(v))
             url = action.get("url", "")
             
@@ -914,6 +1286,26 @@ def execute(action: dict) -> str:
             return f"Downloaded to: {path}"
 
         # ── System ────────────────────────────────────────────────────────────
+        elif a == "empty_recycle_bin":
+            import ctypes
+            try:
+                # SHERB_NOCONFIRMATION = 1, SHERB_NOPROGRESSUI = 2, SHERB_NOSOUND = 4 -> flags = 7
+                result = ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 7)
+                if result == 0 or result == -2147418113:  # 0=Success, -2147418113=Already empty
+                    return "Emptied Recycle Bin"
+                return f"Failed to empty recycle bin (HRESULT {result})"
+            except Exception as e:
+                return f"Failed to empty recycle bin: {e}"
+
+        elif a == "turn_off_wifi":
+            result = __import__("subprocess").run(
+                ["netsh", "wlan", "disconnect"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                return "Disconnected from current Wi-Fi network (soft disconnect)"
+            return f"Failed to disconnect Wi-Fi: {result.stderr.strip()}"
+
         elif a == "run_command":
             result = subprocess.run(
                 str(v), shell=True, capture_output=True,
@@ -1086,14 +1478,14 @@ Add-Type -MemberDefinition $code -Name WinMM -Namespace WinAPI -ErrorAction Stop
                     
                     # 2. Type contact name
                     pyautogui.write(contact, interval=0.02)
-                    time.sleep(4.0)  # Wait for search results to populate (slower load safety)
+                    time.sleep(5.0)  # Wait for search results to populate (increased for groups)
 
                     # 3. Select first result
                     # Pressing down arrow moves focus to the top search result
                     pyautogui.press("down")
-                    time.sleep(0.3)
+                    time.sleep(0.5)
                     pyautogui.press("enter")
-                    time.sleep(1.5)  # Wait for chat to open
+                    time.sleep(4.0)  # Wait for chat to open (groups can take significantly longer to load)
 
                     # 4. Type and send
                     pyautogui.write(message, interval=0.02)
@@ -1143,6 +1535,18 @@ Add-Type -MemberDefinition $code -Name WinMM -Namespace WinAPI -ErrorAction Stop
             return f"Said: {v}"
 
         elif a == "reply":
+            # Fire a personality-aware conversational reply via the tone engine.
+            # We use the original user command (stored in 'command' param) so the
+            # LLM gets the real question, not the pre-parsed LLM value.
+            try:
+                from backend.windows_agent import conversational_reply as _conv_reply
+                user_q = command if command else str(v)
+                conversational_text = _conv_reply(user_q)
+                # Only use if we got a meaningful non-JSON response
+                if conversational_text and not conversational_text.strip().startswith("{"):
+                    return conversational_text
+            except Exception as _cr_err:
+                log.debug("conversational_reply failed, falling back: %s", _cr_err)
             return f"Agent: {v}"
 
         else:
@@ -1243,7 +1647,7 @@ def listen() -> str:
 # BATCH TESTING
 # ──────────────────────────────────────────────────────────────
 def log_missing_tool(action_requested: str, command: str):
-    missing_tools_file = "missing_tools.json"
+    missing_tools_file = MISSING_TOOLS_PATH
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     logs = []
     if os.path.exists(missing_tools_file):
@@ -1266,7 +1670,8 @@ def log_missing_tool(action_requested: str, command: str):
             "action_requested": action_requested,
             "timestamp": now,
             "frequency": 1,
-            "commands": [command] if command else []
+            "commands": [command] if command else [],
+            "suggested": False
         })
     with open(missing_tools_file, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
@@ -1288,11 +1693,9 @@ def run_test_batch(filepath: str):
             if action:
                 global_memory.add_agent(action)
                 print(f"  ✓ Got action: {action['action']}")
-                result = execute(action)
+                result = execute(action, command)
                 print(f"  ↳ {result}")
-                if result.startswith("Unknown action:"):
-                    log_missing_tool(action.get('action', '?'), command)
-                with open("execution_log.jsonl", "a", encoding="utf-8") as _f:
+                with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as _f:
                     _f.write(json.dumps({"command": command, "action_taken": action, "correct": None, "correct_action": None}) + "\n")
                 passed += 1
                 time.sleep(0.5)
@@ -1349,7 +1752,7 @@ def _check_missing_tool_suggestions() -> list[dict]:
 
     Returns list of suggested tools the user may want to define.
     """
-    missing_tools_file = "missing_tools.json"
+    missing_tools_file = MISSING_TOOLS_PATH
     if not os.path.exists(missing_tools_file):
         return []
     try:
@@ -1358,7 +1761,7 @@ def _check_missing_tool_suggestions() -> list[dict]:
     except Exception:
         return []
 
-    suggestions = [log for log in logs if log.get("frequency", 0) >= 3]
+    suggestions = [log for log in logs if log.get("frequency", 0) >= 3 and not log.get("suggested", False)]
     return suggestions
 
 
@@ -1394,15 +1797,28 @@ def main():
             action = ask_llm(command, global_memory.get_history())
             if action:
                 global_memory.add_agent(action)
-                result = execute(action)
+                
+                # ── CLI destructive confirmation ───────────────────────────
+                if action.get("action") in ("delete_file", "delete_folder"):
+                    path = action.get("path", action.get("value", "?"))
+                    try:
+                        confirm = input(f"  ⚠ CONFIRM DELETE '{path}'? (yes/n): ").strip().lower()
+                    except EOFError:
+                        confirm = "n"
+                    if confirm == "yes":
+                        action["confirmed"] = True
+                    else:
+                        print("  ↳ Action cancelled by user.")
+                        continue
+                        
+                result = execute(action, command)
                 print(f"  ↳ {result}")
                 if result.startswith("Unknown action:"):
-                    log_missing_tool(action.get('action', '?'), command)
                     speak("I don't have that capability yet. Logged for future build.")
 
                 # ── Feedback loop ─────────────────────────────────────────
                 feedback = _prompt_feedback(command, action, result)
-                with open("execution_log.jsonl", "a", encoding="utf-8") as _f:
+                with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as _f:
                     _f.write(json.dumps({
                         "command": command,
                         "action_taken": action,
@@ -1424,6 +1840,18 @@ def main():
                         print(f"     To add '{action_name}', define it in a new SKILL.md at .agents/skills/{action_name}/SKILL.md")
                         print(f"     Instruction: implement the handler in execute() following the existing pattern.")
                         speak(f"Noted. I'll log {action_name} for future implementation.")
+                    
+                    try:
+                        with open(MISSING_TOOLS_PATH, "r", encoding="utf-8") as _f:
+                            _logs = __import__("json").load(_f)
+                        for _l in _logs:
+                            if _l.get("action_requested") == action_name:
+                                _l["suggested"] = True
+                                break
+                        with open(MISSING_TOOLS_PATH, "w", encoding="utf-8") as _f:
+                            __import__("json").dump(_logs, _f, indent=2)
+                    except Exception as e:
+                        pass
             else:
                 speak("Sorry, all AI providers are down right now.")
 

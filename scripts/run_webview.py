@@ -6,10 +6,15 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import json
+import time
 
 # Import backend logic
 import backend.windows_agent as _agent_backend
-from backend.windows_agent import ask_llm as _ask_llm_backend, execute as _execute_backend, global_memory, listen as _listen_backend, _check_missing_tool_suggestions
+from backend.windows_agent import ask_llm as _ask_llm_backend, execute as _execute_backend, global_memory, listen as _listen_backend, _check_missing_tool_suggestions, EXECUTION_LOG_PATH, MISSING_TOOLS_PATH
+
+import backend.safety as safety
+import backend.memory as memory
+import backend.hooks as hooks
 
 try:
     import psutil
@@ -27,6 +32,113 @@ except ImportError:
 class Api:
     def __init__(self):
         self.file_lock = threading.Lock()
+
+    # ── Settings & Hooks API Bridges ──────────────────────────────────────────
+
+    def get_sandbox_mode(self):
+        return safety.is_sandbox_active()
+
+    def set_sandbox_mode(self, enabled):
+        safety.set_sandbox_mode(enabled)
+        hooks.trigger_ui_refresh()
+        return "ok"
+
+    def is_startup_enabled(self):
+        return hooks.is_startup_enabled()
+
+    def set_startup_enabled(self, enabled):
+        hooks.set_startup_enabled(enabled)
+        hooks.trigger_ui_refresh()
+        return "ok"
+
+    def get_macros(self):
+        return json.dumps(memory.list_macros())
+
+    def delete_macro(self, name):
+        memory.delete_macro(name)
+        hooks.trigger_ui_refresh()
+        return "ok"
+
+    def save_macro(self, name, steps):
+        """Saves a macro directly with name and steps list."""
+        try:
+            memory.save_macro(name, steps)
+            hooks.trigger_ui_refresh()
+            return "Success"
+        except Exception as e:
+            return f"Error: {e}"
+
+    def edit_macro_via_prompt(self, name, instruction):
+        print(f"[Api] Editing macro '{name}' with prompt: {instruction}")
+        from backend.windows_agent import edit_macro_steps_via_llm
+        existing_steps = memory.get_macro(name)
+        if not existing_steps:
+            return f"Error: Macro '{name}' does not exist."
+            
+        try:
+            new_steps = edit_macro_steps_via_llm(name, existing_steps, instruction)
+            # Safety guard: only delete if instruction explicitly says so.
+            # Prevents LLM returning [] on failure from silently wiping the macro.
+            _delete_keywords = ("delete", "clear", "remove all", "wipe", "erase", "reset")
+            _explicit_delete = any(kw in instruction.lower() for kw in _delete_keywords)
+            if not new_steps:
+                if _explicit_delete:
+                    memory.delete_macro(name)
+                    hooks.trigger_ui_refresh()
+                    return f"Macro '{name}' cleared."
+                else:
+                    return (f"Error: The edit returned no steps for macro '{name}'. "
+                            "The macro was NOT deleted. Please try a more specific instruction.")
+            else:
+                try:
+                    memory.save_macro(name, new_steps)
+                except Exception as e:
+                    return f"Error: Failed to save macro '{name}': {e}"
+                hooks.trigger_ui_refresh()
+                return "Success"
+        except Exception as e:
+            return f"Error: {e}"
+
+
+    # ── Memory DB Inspection ───────────────────────────────────────────────────
+
+    def get_memory_db_stats(self):
+        """Return row counts for all memory tables."""
+        return json.dumps(memory.get_db_stats())
+
+    def get_memory_history(self):
+        """Return all interaction history rows."""
+        return json.dumps(memory.get_interaction_history())
+
+    def get_memory_log(self):
+        """Return interaction log rows (latest 500)."""
+        return json.dumps(memory.get_interaction_log())
+
+    def get_profile(self):
+        """Return the user personalization profile as a JSON string."""
+        return json.dumps(memory.get_profile())
+
+    def set_profile(self, field: str, value: str):
+        """Upsert a single profile field. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.set_profile_field(field, value)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return f"error: unknown field '{field}'"
+        except Exception as e:
+            return f"error: {e}"
+
+    def set_profile_batch(self, profile_json: str):
+        """Batch-update profile from a JSON string dict. Returns 'ok'."""
+        try:
+            profile_dict = json.loads(profile_json)
+            memory.set_profile(profile_dict)
+            hooks.trigger_ui_refresh()
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
+
 
     # ── Core command pipeline ──────────────────────────────────────────────────
     
@@ -46,8 +158,65 @@ class Api:
         Returns a dict: {"action": "some_action", "result": "raw string", "full": {...}}
         """
         print(f"[Api] Received command: {command}")
+        self._last_command = command
+        safety.reset_emergency_stop()
         global_memory.add_user(command)
 
+        cmd_lower = command.strip().lower()
+
+        # 1. Intercept macro save command
+        import re
+        save_match = re.match(r"save\s+(?:last\s+(\d+)\s+)?actions\s+as\s+(.+)", cmd_lower)
+        if not save_match:
+            save_match = re.match(r"save\s+this\s+as\s+(.+)", cmd_lower)
+
+        if save_match:
+            if len(save_match.groups()) == 2:
+                num_steps = int(save_match.group(1)) if save_match.group(1) else 3
+                macro_name = save_match.group(2).strip()
+            else:
+                num_steps = 3
+                macro_name = save_match.group(1).strip()
+
+            user_cmds = []
+            history = global_memory.get_history()
+            # Traverse history and skip non-user actions
+            for item in reversed(history[:-1]):
+                if item.startswith("User:"):
+                    cmd_val = item[len("User:"):].strip()
+                    if not (cmd_val.lower().startswith("save ") or cmd_val.lower().startswith("run ") or cmd_val.lower().startswith("delete macro")):
+                        user_cmds.insert(0, cmd_val)
+                        if len(user_cmds) >= num_steps:
+                            break
+
+            if user_cmds:
+                memory.save_macro(macro_name, user_cmds)
+                reply_val = f"Saved macro '{macro_name}' with {len(user_cmds)} steps:\n" + "\n".join(f"  {i+1}. {c}" for i, c in enumerate(user_cmds))
+                action_dict = {"action": "reply", "value": reply_val}
+                self._last_action = action_dict
+                hooks.trigger_ui_refresh()
+                return {"action": "reply", "full": action_dict, "result": "Success"}
+            else:
+                action_dict = {"action": "reply", "value": "Could not find any recent user commands to save as a macro."}
+                self._last_action = action_dict
+                return {"action": "reply", "full": action_dict, "result": "Success"}
+
+        # 2. Intercept macro run command
+        macro_run_name = cmd_lower
+        if macro_run_name.startswith("run "):
+            macro_run_name = macro_run_name[4:].strip()
+
+        macro_steps = memory.get_macro(macro_run_name)
+        if macro_steps:
+            action_dict = {
+                "action": "run_macro",
+                "value": macro_run_name,
+                "steps": macro_steps
+            }
+            self._last_action = action_dict
+            return {"action": "run_macro", "full": action_dict, "result": "Success"}
+
+        # Route regular commands to LLM
         action_dict = _ask_llm_backend(command, global_memory.get_history())
 
         if action_dict:
@@ -62,18 +231,16 @@ class Api:
         self._last_action = None
         return None
 
-    def execute_action(self, action_str: str):
+    def execute_action(self, action_str: str, confirmed: bool = False):
         """
         Executes the last parsed action dict (cached from ask_llm).
         Falls back to parsing history if cache is missing.
         Returns a human-readable result string.
         """
-        print(f"[Api] Executing: {action_str}")
+        print(f"[Api] Executing: {action_str} (confirmed={confirmed})")
 
-        # ── Fast path: use cached action dict from ask_llm ────────────────────
         action_dict = getattr(self, "_last_action", None)
 
-        # ── Fallback: try to recover from memory ──────────────────────────────
         if not action_dict:
             history = global_memory.get_history()
             for item in reversed(history):
@@ -91,7 +258,55 @@ class Api:
                         print(f"[Api] Error parsing action dict from history: {e}")
 
         if action_dict:
-            result = _execute_backend(action_dict)
+            if confirmed:
+                action_dict["confirmed"] = True
+            # Check if action is run_macro
+            if action_dict.get("action") == "run_macro":
+                steps = action_dict.get("steps", [])
+                name = action_dict.get("value", "") or action_dict.get("name", "")
+                if not steps and name:
+                    import backend.memory as memory
+                    steps = memory.get_macro(name) or []
+                
+                def run_steps():
+                    try:
+                        win = webview.windows[0]
+                        for i, step in enumerate(steps):
+                            if safety.is_emergency_stopped():
+                                win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('error', 'Macro execution aborted: Emergency Stop active.');")
+                                break
+                                
+                            win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('user', {json.dumps(step)});")
+                            global_memory.add_user(step)
+                            
+                            step_action = _ask_llm_backend(step, global_memory.get_history())
+                            if step_action:
+                                global_memory.add_agent(step_action)
+                                win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('action', '⚡ ACTION → ' + {json.dumps(step_action.get('action'))});")
+                                
+                                step_result = _execute_backend(step_action, step)
+                                if step_result.lower().startswith('error'):
+                                    win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('error', {json.dumps(step_result)});")
+                                else:
+                                    win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('result', {json.dumps(step_result)});")
+                            else:
+                                win.evaluate_js(f"if (window.addMessageFromPython) window.addMessageFromPython('error', 'Step failed: LLM returned no action.');")
+                                break
+                            time.sleep(1.0)
+                    except Exception as e:
+                        print(f"Error running macro: {e}")
+                
+                threading.Thread(target=run_steps, daemon=True).start()
+                return f"Macro '{name}' started."
+
+            last_cmd = getattr(self, "_last_command", "")
+            if not last_cmd:
+                history = global_memory.get_history()
+                for item in reversed(history):
+                    if item.startswith("User:"):
+                        last_cmd = item[len("User:"):].strip()
+                        break
+            result = _execute_backend(action_dict, last_cmd)
             print(f"[Api] Execution result: {result}")
             return str(result)
         else:
@@ -113,7 +328,7 @@ class Api:
         try:
             fb = json.loads(feedback_json)
             with self.file_lock:
-                with open("execution_log.jsonl", "a", encoding="utf-8") as f:
+                with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(json.dumps(fb) + "\n")
             return "Feedback recorded"
         except Exception as e:
@@ -126,7 +341,7 @@ class Api:
 
     def mark_tool_suggested(self, action_name: str):
         """Marks a missing tool as suggested in missing_tools.json so the frontend doesn't re-prompt."""
-        missing_tools_file = "missing_tools.json"
+        missing_tools_file = MISSING_TOOLS_PATH
         try:
             with self.file_lock:
                 if not os.path.exists(missing_tools_file):
@@ -146,6 +361,61 @@ class Api:
                         json.dump(logs, f, indent=2)
                     return "Marked suggested"
                 return "Tool not found"
+        except Exception as e:
+            return f"Error: {e}"
+
+    def get_sequence_suggestions(self):
+        """Returns list of repetitive command sequences with frequency >= 3 that aren't already macros or dismissed."""
+        try:
+            raw_suggestions = memory.detect_repetitive_sequences(min_freq=3)
+            # Filter out single-command suggestions to only suggest multi-step macros
+            raw_suggestions = [s for s in raw_suggestions if s.get("type") == "sequence"]
+            
+            # Filter out already saved macros
+            saved_macros = memory.list_macros()
+            saved_steps_lists = list(saved_macros.values())
+            
+            # Filter out dismissed suggestions
+            dismissed_file = os.path.expanduser("~/.jarvis/dismissed_sequences.json")
+            dismissed = []
+            if os.path.exists(dismissed_file):
+                try:
+                    with open(dismissed_file, "r", encoding="utf-8") as f:
+                        dismissed = json.load(f)
+                except Exception:
+                    pass
+                    
+            filtered = []
+            for sug in raw_suggestions:
+                steps = sug.get("steps", [])
+                if steps in saved_steps_lists:
+                    continue
+                if steps in dismissed:
+                    continue
+                filtered.append(sug)
+                
+            return json.dumps(filtered, indent=2)
+        except Exception as e:
+            print(f"[Api] get_sequence_suggestions error: {e}")
+            return "[]"
+
+    def dismiss_sequence_suggestion(self, steps):
+        """Saves a sequence to dismissed_sequences.json so it's not suggested again."""
+        try:
+            dismissed_file = os.path.expanduser("~/.jarvis/dismissed_sequences.json")
+            os.makedirs(os.path.dirname(dismissed_file), exist_ok=True)
+            dismissed = []
+            if os.path.exists(dismissed_file):
+                try:
+                    with open(dismissed_file, "r", encoding="utf-8") as f:
+                        dismissed = json.load(f)
+                except Exception:
+                    pass
+            if steps not in dismissed:
+                dismissed.append(steps)
+                with open(dismissed_file, "w", encoding="utf-8") as f:
+                    json.dump(dismissed, f, indent=2)
+            return "ok"
         except Exception as e:
             return f"Error: {e}"
 
@@ -281,4 +551,13 @@ if __name__ == '__main__':
         easy_drag=False,
     )
 
-    webview.start(debug=False)
+    def on_startup(win):
+        hooks.register_webview_window(win)
+        safety.start_emergency_stop_listener()
+        hooks.start_summon_hotkey_listener()
+        hooks.start_clipboard_watcher()
+        hooks.start_file_watcher()
+        hooks.start_notifications_watcher()
+        hooks.start_tray_icon(hooks.summon_panel, lambda: os._exit(0))
+
+    webview.start(on_startup, (window,), debug=False)
