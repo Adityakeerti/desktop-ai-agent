@@ -36,6 +36,10 @@ cd frontend; npx tsc --noEmit; if ($?) { npm run build; cd .. }
 python -m pytest tests/ -x -q
 ```
 
+### 4. Memory — Check & Update on Every Task
+
+Always inspect the `mem0-mcp` memory database (search/get memories) BEFORE starting work to gain context on past decisions or requirements, and update/add new memories AFTER completing the task to preserve progress for future agents.
+
 ## Project Structure
 
 ```
