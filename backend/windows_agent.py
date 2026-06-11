@@ -61,6 +61,11 @@ pyautogui.FAILSAFE = True  # move mouse to top-left corner to emergency stop
 # ──────────────────────────────────────────────────────────────
 # APP PATHS  (common Windows apps with fallbacks)
 # ──────────────────────────────────────────────────────────────
+PROGRAM_FILES = os.environ.get("ProgramFiles", "C:\\Program Files")
+PROGRAM_FILES_X86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+LOCAL_APPDATA = os.environ.get("LOCALAPPDATA", "C:\\Users\\" + os.getenv("USERNAME", "") + "\\AppData\\Local")
+APPDATA = os.environ.get("APPDATA", "C:\\Users\\" + os.getenv("USERNAME", "") + "\\AppData\\Roaming")
+
 APP_PATHS = {
     "notepad":          "notepad.exe",
     "calculator":       "calc.exe",
@@ -78,61 +83,61 @@ APP_PATHS = {
     "snipping tool":    "snippingtool.exe",
     "chrome": [
         "chrome.exe",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        f"{PROGRAM_FILES}\\Google\\Chrome\\Application\\chrome.exe",
+        f"{PROGRAM_FILES_X86}\\Google\\Chrome\\Application\\chrome.exe",
     ],
     "chromium": [
         "chromium.exe",
-        "C:\\Program Files\\Chromium\\Application\\chromium.exe",
+        f"{PROGRAM_FILES}\\Chromium\\Application\\chromium.exe",
     ],
     "firefox": [
         "firefox.exe",
-        "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
-        "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe",
+        f"{PROGRAM_FILES}\\Mozilla Firefox\\firefox.exe",
+        f"{PROGRAM_FILES_X86}\\Mozilla Firefox\\firefox.exe",
     ],
     "edge": [
         "msedge.exe",
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        f"{PROGRAM_FILES}\\Microsoft\\Edge\\Application\\msedge.exe",
+        f"{PROGRAM_FILES_X86}\\Microsoft\\Edge\\Application\\msedge.exe",
     ],
     "brave": [
         "brave.exe",
-        "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
-        "C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+        f"{PROGRAM_FILES}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+        f"{PROGRAM_FILES_X86}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
     ],
     "vscode": [
         "code.exe",
-        "C:\\Program Files\\Microsoft VS Code\\Code.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+        f"{PROGRAM_FILES}\\Microsoft VS Code\\Code.exe",
+        f"{LOCAL_APPDATA}\\Programs\\Microsoft VS Code\\Code.exe",
     ],
     "vs code": [
         "code.exe",
-        "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+        f"{PROGRAM_FILES}\\Microsoft VS Code\\Code.exe",
     ],
     "microsoft store": "start ms-windows-store:",
     "spotify": [
         "Spotify.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Roaming\\Spotify\\Spotify.exe",
+        f"{APPDATA}\\Spotify\\Spotify.exe",
     ],
     "discord": [
         "Discord.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Local\\Discord\\app-*\\Discord.exe",
+        f"{LOCAL_APPDATA}\\Discord\\app-*\\Discord.exe",
     ],
     "zoom": [
         "Zoom.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Roaming\\Zoom\\bin\\Zoom.exe",
+        f"{APPDATA}\\Zoom\\bin\\Zoom.exe",
     ],
     "teams": [
         "Teams.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Local\\Microsoft\\Teams\\current\\Teams.exe",
+        f"{LOCAL_APPDATA}\\Microsoft\\Teams\\current\\Teams.exe",
     ],
     "slack": [
         "slack.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Local\\slack\\slack.exe",
+        f"{LOCAL_APPDATA}\\slack\\slack.exe",
     ],
     "telegram": [
         "Telegram.exe",
-        "C:\\Users\\" + os.getenv("USERNAME","") + "\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe",
+        f"{APPDATA}\\Telegram Desktop\\Telegram.exe",
     ],
 }
 
@@ -273,22 +278,35 @@ def build_prompt(command: str, history: list = None) -> str:
 
     # Fix #5 — inject actual screen resolution into prompt so LLM generates correct coords
     screen_w, screen_h = _get_screen_size()
+    
+    import os
+    username = os.getenv("USERNAME", "User")
+    home_dir = os.path.expanduser("~").replace("\\", "/")
 
-    return f"""You are an advanced Windows PC automation controller. Parse the user's command into ONE action JSON object.
+    return f"""You are JARVIS, an advanced Windows PC automation controller for {username}'s PC. Parse the user's command into ONE action JSON object.
 
 {history_str}CURRENT COMMAND: "{command}"
 
-SCREEN INFO: The user's primary display is {screen_w}×{screen_h} pixels. Use coordinates within this range.
+ENVIRONMENT:
+- OS: Windows
+- Primary display: {screen_w}×{screen_h} pixels. Use coordinates within this range.
+- Browser: Chrome (preferred over Edge)
+- IDE: VS Code
+- Common paths: Desktop={home_dir}/Desktop, Downloads={home_dir}/Downloads
 
 CRITICAL RULES:
-1. Respond with ONLY valid JSON — no markdown fences, no extra text whatsoever
-2. Extract numeric values and names accurately
+1. Respond with ONLY valid JSON — no markdown fences, no extra text whatsoever.
+2. Extract numeric values and names accurately. Ensure JSON keys and values are properly escaped.
 3. For app names use lowercase. CRITICAL: If the user requests a specific app/browser (e.g. 'brave', 'edge'), use that exact name. Do NOT default to 'chrome'.
-4. For file paths use forward slashes or escaped backslashes
-5. CRITICAL: If the user asks to type or do something in a specific app, your VERY FIRST action MUST be to `open_app` or `switch_window`. Do NOT use `type_text` blindly!
-6. For coordinate actions, ensure x is between 0-{screen_w - 1} and y is between 0-{screen_h - 1}
-7. CRITICAL: Do NOT autocorrect or modify URLs, paths, or names. Copy them EXACTLY as typed by the user (e.g. gehu.ac.in must stay gehu.ac.in).
+4. For file paths use forward slashes or escaped backslashes.
+5. CRITICAL: If the user asks to type or do something in a specific app, your VERY FIRST action MUST be to `open_app` or `switch_window` (except for actions with dedicated commands like `send_whatsapp`). Do NOT use `type_text` blindly!
+6. For coordinate actions, ensure x is between 0-{screen_w - 1} and y is between 0-{screen_h - 1}.
+7. CRITICAL: Do NOT autocorrect or modify URLs, paths, or names. Copy them EXACTLY as typed by the user.
 8. CRITICAL: If asked to open a website in a SPECIFIC browser, use "open_app" AND include the "url" field (e.g., {{"action":"open_app", "value":"brave", "url":"https://google.com"}}).
+9. If you are unsure what to do, or if the request is ambiguous, use the "reply" action to ask for clarification. DO NOT guess destructive actions.
+10. Failure recovery: If an app is not found, try variations of its name. Prefer the least destructive action.
+    11. No Auto-Tool Generation: Do NOT hallucinate shell commands (run_command/run_powershell) for unsupported actions. Instead, hallucinate a fake action name (e.g., {{"action": "turn_off_wifi"}}) so the system can log it for future implementation. CRITICAL: Do NOT hallucinate fake actions for things that ALREADY exist (e.g., set_reminder, search_web, get_weather, set_volume, send_whatsapp — these are all real actions). Use the real action when the user's intent matches an existing tool.
+12. CRITICAL: If the user asks to open an app AND perform a task that has a dedicated action (e.g., "open whatsapp and send message..."), use the dedicated action (e.g., "send_whatsapp") directly because it handles opening the app automatically. DO NOT fallback to a plain "open_app" action.
 
 AVAILABLE ACTIONS (pick exactly one):
 
@@ -356,6 +374,97 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"say","value":"Task complete"}}                       - speak text via TTS
 {{"action":"reply","value":"I am an AI automation agent"}}       - answer conversational question
 
+EXAMPLES (30 pairs — cover every action category):
+User: "Open notepad"
+{{"action": "open_app", "value": "notepad"}}
+
+User: "open chrome at youtube.com"
+{{"action": "open_app", "value": "chrome", "url": "https://youtube.com"}}
+
+User: "open my project"
+{{"action": "open_app", "value": "code", "url": "{home_dir}/Documents/Project"}}
+
+User: "open my calculator"
+{{"action": "open_app", "value": "calculator"}}
+
+User: "switch to chrome"
+{{"action": "switch_window", "value": "Chrome"}}
+
+User: "minimize this window"
+{{"action": "minimize_window", "value": "Notepad"}}
+
+User: "maximize notepad"
+{{"action": "maximize_window", "value": "Notepad"}}
+
+User: "what is the active window"
+{{"action": "get_active_window"}}
+
+User: "Type 'hello world'"
+{{"action": "type_text", "value": "hello world"}}
+
+User: "copy this"
+{{"action": "press_keys", "value": "ctrl+c"}}
+
+User: "paste here"
+{{"action": "paste_text"}}
+
+User: "click the submit button"
+{{"action": "click_element", "value": "Submit"}}
+
+User: "click at 500 300"
+{{"action": "click_at", "x": 500, "y": 300}}
+
+User: "scroll down a bit"
+{{"action": "scroll", "direction": "down", "amount": 3}}
+
+User: "take a screenshot"
+{{"action": "screenshot", "path": "{home_dir}/Desktop/shot.png"}}
+
+User: "create a file called notes.txt with content hello world"
+{{"action": "create_file", "path": "notes.txt", "content": "hello world"}}
+
+User: "list files on my desktop"
+{{"action": "list_files", "path": "~/Desktop"}}
+
+User: "read file C:/test.txt"
+{{"action": "read_file", "path": "C:/test.txt"}}
+
+User: "delete file old.txt"
+{{"action": "delete_file", "path": "old.txt"}}
+
+User: "run ipconfig"
+{{"action": "run_command", "value": "ipconfig /all"}}
+
+User: "get system info"
+{{"action": "get_system_info"}}
+
+User: "set volume to 50"
+{{"action": "set_volume", "value": 50}}
+
+User: "volume up a bit"
+{{"action": "set_volume", "value": 65}}
+
+User: "what's on my clipboard"
+{{"action": "get_clipboard"}}
+
+User: "copy hello to clipboard"
+{{"action": "set_clipboard", "value": "hello"}}
+
+User: "What's the weather in Tokyo?"
+{{"action": "get_weather", "city": "Tokyo"}}
+
+User: "search Google for python tutorials"
+{{"action": "search_web", "value": "python tutorials"}}
+
+User: "set a reminder to drink water in 5 minutes"
+{{"action": "set_reminder", "message": "drink water", "seconds": 300}}
+
+User: "send hi to mom"
+{{"action": "send_whatsapp", "contact": "mom", "message": "hi"}}
+
+User: "close this"
+{{"action": "reply", "value": "Which window or application would you like me to close?"}}
+
 RESPOND WITH ONLY THE JSON OBJECT."""
 
 
@@ -382,10 +491,12 @@ def _parse_json(text: str) -> dict:
 
 def ask_ollama(command: str, history: list = None) -> dict:
     """Local Ollama — primary provider, runs gemma4:e4b entirely offline."""
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
     resp = requests.post(
-        "http://localhost:11434/v1/chat/completions",
+        f"{base_url}/v1/chat/completions",
         json={
-            "model": "gemma4:e4b",
+            "model": model,
             "messages": [{"role": "user", "content": build_prompt(command, history)}],
             "temperature": 0,
             "response_format": {"type": "json_object"}
@@ -398,10 +509,12 @@ def ask_ollama(command: str, history: list = None) -> dict:
 
 def ask_ollama_cloud(command: str, history: list = None) -> dict:
     """Ollama Cloud — proxies through local client to the datacenter."""
+    base_url = os.getenv("OLLAMA_CLOUD_BASE_URL", "http://localhost:11434")
+    model = os.getenv("OLLAMA_CLOUD_MODEL", "gemma4:31b-cloud")
     resp = requests.post(
-        "http://localhost:11434/v1/chat/completions",
+        f"{base_url}/v1/chat/completions",
         json={
-            "model": "gemma4:31b-cloud",
+            "model": model,
             "messages": [{"role": "user", "content": build_prompt(command, history)}],
             "temperature": 0,
             "response_format": {"type": "json_object"}
@@ -505,11 +618,18 @@ def execute(action: dict) -> str:
         if a == "open_app":
             app_path = _resolve_app_path(str(v))
             url = action.get("url", "")
+            
+            clean_path = app_path.strip('"')
+            needs_search = False
+            
             if app_path == v and not str(v).lower().endswith(".exe") and not str(v).startswith("start "):
+                needs_search = True
+            elif not app_path.startswith("start ") and not os.path.exists(clean_path) and shutil.which(clean_path) is None:
+                needs_search = True
+
+            if needs_search:
                 # ── Windows Search fallback (Fix #3) ──────────────────────
                 # Poll for the Start Menu / Search window instead of blind sleep
-                old = pyautogui.FAILSAFE
-                pyautogui.FAILSAFE = False
                 try:
                     import win32gui
                     pyautogui.press("win")
@@ -533,12 +653,17 @@ def execute(action: dict) -> str:
                     pyautogui.write(str(v), interval=0.02)
                     time.sleep(0.8)
                     pyautogui.press("enter")
-                finally:
-                    pyautogui.FAILSAFE = old
+                except Exception as e:
+                    return f"Windows Search fallback failed: {e}"
                 return f"Opened via Windows Search: {v}"
             else:
-                cmd = f'{app_path} "{url}"' if url else app_path
-                subprocess.Popen(cmd, shell=True)
+                if app_path.startswith("start "):
+                    subprocess.Popen(app_path + (f' "{url}"' if url else ""), shell=True)
+                else:
+                    if url:
+                        subprocess.Popen([app_path.strip('"'), url])
+                    else:
+                        subprocess.Popen([app_path.strip('"')])
                 return f"Opened: {v}" + (f" at {url}" if url else "")
 
         elif a == "close_app":
@@ -547,7 +672,7 @@ def execute(action: dict) -> str:
                 app_name = os.path.basename(app_name[0])
             elif isinstance(app_name, str) and not app_name.startswith("start"):
                 app_name = os.path.basename(app_name)
-            os.system(f"taskkill /f /im {app_name} 2>nul")
+            os.system(f"taskkill /im {app_name} 2>nul || taskkill /f /im {app_name} 2>nul")
             return f"Closed: {v}"
 
         elif a == "open_url":
@@ -594,28 +719,20 @@ def execute(action: dict) -> str:
         # ── Keyboard / Mouse ──────────────────────────────────────────────────
         elif a == "type_text":
             time.sleep(0.2)
-            old = pyautogui.FAILSAFE; pyautogui.FAILSAFE = False
-            try:
-                text_to_type = str(v)
-                if "\n" in text_to_type or len(text_to_type) > 50:
-                    # Fast paste for multiline or long text
-                    import pyperclip
-                    pyperclip.copy(text_to_type)
-                    time.sleep(0.1)
-                    pyautogui.hotkey("ctrl", "v")
-                else:
-                    pyautogui.write(text_to_type, interval=0.01)
-            finally:
-                pyautogui.FAILSAFE = old
+            text_to_type = str(v)
+            if "\n" in text_to_type or len(text_to_type) > 50:
+                # Fast paste for multiline or long text
+                import pyperclip
+                pyperclip.copy(text_to_type)
+                time.sleep(0.1)
+                pyautogui.hotkey("ctrl", "v")
+            else:
+                pyautogui.write(text_to_type, interval=0.01)
             return f"Typed: {v[:50]}..."
 
         elif a == "press_keys":
-            old = pyautogui.FAILSAFE; pyautogui.FAILSAFE = False
-            try:
-                keys = [k.strip() for k in str(v).split("+")]
-                pyautogui.hotkey(*keys)
-            finally:
-                pyautogui.FAILSAFE = old
+            keys = [k.strip() for k in str(v).split("+")]
+            pyautogui.hotkey(*keys)
             return f"Pressed: {v}"
 
         elif a == "click_element":
@@ -681,11 +798,7 @@ def execute(action: dict) -> str:
             return f"Dragged ({x1},{y1}) → ({x2},{y2})"
 
         elif a == "paste_text":
-            old = pyautogui.FAILSAFE; pyautogui.FAILSAFE = False
-            try:
-                pyautogui.hotkey("ctrl", "v")
-            finally:
-                pyautogui.FAILSAFE = old
+            pyautogui.hotkey("ctrl", "v")
             return "Pasted clipboard content"
 
         # ── Screen ────────────────────────────────────────────────────────────
@@ -716,6 +829,11 @@ def execute(action: dict) -> str:
         elif a == "delete_file":
             path = os.path.expandvars(os.path.expanduser(str(action.get("path", v))))
             if os.path.exists(path):
+                try:
+                    import stat
+                    os.chmod(path, stat.S_IWRITE)
+                except Exception:
+                    pass
                 os.remove(path)
                 return f"Deleted: {path}"
             return f"File not found: {path}"
@@ -747,7 +865,17 @@ def execute(action: dict) -> str:
         elif a == "delete_folder":
             path = os.path.expandvars(os.path.expanduser(str(action.get("path", v))))
             if os.path.isdir(path):
-                shutil.rmtree(path)
+                import stat
+                def remove_readonly(func, p, _):
+                    try:
+                        os.chmod(p, stat.S_IWRITE)
+                        func(p)
+                    except Exception:
+                        pass
+                try:
+                    shutil.rmtree(path, onexc=remove_readonly)
+                except TypeError:
+                    shutil.rmtree(path, onerror=remove_readonly)
                 return f"Deleted folder: {path}"
             return f"Folder not found: {path}"
 
@@ -792,6 +920,8 @@ def execute(action: dict) -> str:
                 text=True, timeout=30, encoding="utf-8", errors="replace"
             )
             out = (result.stdout + result.stderr).strip()
+            if not out:
+                out = f"Command executed successfully (exit code {result.returncode})" if result.returncode == 0 else f"Command failed with exit code {result.returncode}"
             return f"Command output:\n{out[:2000]}"
 
         elif a == "run_powershell":
@@ -801,6 +931,8 @@ def execute(action: dict) -> str:
                 encoding="utf-8", errors="replace"
             )
             out = (result.stdout + result.stderr).strip()
+            if not out:
+                out = f"PowerShell command executed successfully (exit code {result.returncode})" if result.returncode == 0 else f"PowerShell command failed with exit code {result.returncode}"
             return f"PowerShell output:\n{out[:2000]}"
 
         elif a == "get_system_info":
@@ -1017,7 +1149,8 @@ Add-Type -MemberDefinition $code -Name WinMM -Namespace WinAPI -ErrorAction Stop
             return f"Unknown action: {a}"
 
     except Exception as e:
-        return f"Error executing '{action.get('action','?')}': {type(e).__name__}: {e}"
+        import traceback
+        return f"Error executing '{action.get('action','?')}': {type(e).__name__}: {e}\n{traceback.format_exc()}"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1109,6 +1242,35 @@ def listen() -> str:
 # ──────────────────────────────────────────────────────────────
 # BATCH TESTING
 # ──────────────────────────────────────────────────────────────
+def log_missing_tool(action_requested: str, command: str):
+    missing_tools_file = "missing_tools.json"
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    logs = []
+    if os.path.exists(missing_tools_file):
+        try:
+            with open(missing_tools_file, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+        except Exception:
+            pass
+    found = False
+    for log in logs:
+        if log.get("action_requested") == action_requested:
+            log["frequency"] = log.get("frequency", 1) + 1
+            log["timestamp"] = now
+            if command and command not in log.setdefault("commands", []):
+                log["commands"].append(command)
+            found = True
+            break
+    if not found:
+        logs.append({
+            "action_requested": action_requested,
+            "timestamp": now,
+            "frequency": 1,
+            "commands": [command] if command else []
+        })
+    with open(missing_tools_file, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2)
+
 def run_test_batch(filepath: str):
     print(f"\n[TEST] Loading prompts from {filepath}...")
     if not os.path.exists(filepath):
@@ -1128,6 +1290,10 @@ def run_test_batch(filepath: str):
                 print(f"  ✓ Got action: {action['action']}")
                 result = execute(action)
                 print(f"  ↳ {result}")
+                if result.startswith("Unknown action:"):
+                    log_missing_tool(action.get('action', '?'), command)
+                with open("execution_log.jsonl", "a", encoding="utf-8") as _f:
+                    _f.write(json.dumps({"command": command, "action_taken": action, "correct": None, "correct_action": None}) + "\n")
                 passed += 1
                 time.sleep(0.5)
             else:
@@ -1140,6 +1306,60 @@ def run_test_batch(filepath: str):
     print("=" * 50)
     print(f"  [TEST RESULTS] Passed: {passed}/{len(prompts)} | Failed: {failed}")
     print("=" * 50)
+
+
+# ──────────────────────────────────────────────────────────────
+# FEEDBACK LOOP + PHASE B TOOL SUGGESTION
+# ──────────────────────────────────────────────────────────────
+
+def _prompt_feedback(command: str, action: dict, result: str) -> dict:
+    """Ask user whether the action was correct and return feedback dict.
+
+    Returns {"correct": bool, "correct_action": dict|None}.
+    Skips feedback for 'reply' actions (conversational) and known-good results.
+    """
+    if action.get("action") == "reply":
+        return {"correct": True, "correct_action": None}
+    if result.startswith("Error"):
+        return {"correct": False, "correct_action": None}
+
+    try:
+        print()
+        fb = input("  [FEEDBACK] Was this correct? (y/n/q to skip): ").strip().lower()
+        if fb == "q":
+            return {"correct": None, "correct_action": None}
+        if fb == "y":
+            return {"correct": True, "correct_action": None}
+        if fb == "n":
+            correct_json = input("  [FEEDBACK] Enter correct action JSON (or press Enter to skip): ").strip()
+            if correct_json:
+                try:
+                    correct_action = json.loads(correct_json)
+                    return {"correct": False, "correct_action": correct_action}
+                except json.JSONDecodeError:
+                    print("  [FEEDBACK] Invalid JSON, skipping.")
+            return {"correct": False, "correct_action": None}
+    except EOFError:
+        pass
+    return {"correct": None, "correct_action": None}
+
+
+def _check_missing_tool_suggestions() -> list[dict]:
+    """Phase B: Check missing_tools.json for actions with frequency >= 3.
+
+    Returns list of suggested tools the user may want to define.
+    """
+    missing_tools_file = "missing_tools.json"
+    if not os.path.exists(missing_tools_file):
+        return []
+    try:
+        with open(missing_tools_file, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    except Exception:
+        return []
+
+    suggestions = [log for log in logs if log.get("frequency", 0) >= 3]
+    return suggestions
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1176,6 +1396,34 @@ def main():
                 global_memory.add_agent(action)
                 result = execute(action)
                 print(f"  ↳ {result}")
+                if result.startswith("Unknown action:"):
+                    log_missing_tool(action.get('action', '?'), command)
+                    speak("I don't have that capability yet. Logged for future build.")
+
+                # ── Feedback loop ─────────────────────────────────────────
+                feedback = _prompt_feedback(command, action, result)
+                with open("execution_log.jsonl", "a", encoding="utf-8") as _f:
+                    _f.write(json.dumps({
+                        "command": command,
+                        "action_taken": action,
+                        "correct": feedback["correct"],
+                        "correct_action": feedback["correct_action"],
+                    }) + "\n")
+
+                # ── Phase B: Tool suggestion (frequency >= 3) ─────────────
+                suggestions = _check_missing_tool_suggestions()
+                for s in suggestions:
+                    action_name = s.get("action_requested", "?")
+                    freq = s.get("frequency", 0)
+                    cmds = s.get("commands", [])
+                    print()
+                    print(f"  ⚡ [SUGGESTION] You've asked for '{action_name}' {freq} times.")
+                    print(f"     Examples: {cmds[:3]}")
+                    ans = input("     Would you like to add this as a custom action? (y/n): ").strip().lower()
+                    if ans == "y":
+                        print(f"     To add '{action_name}', define it in a new SKILL.md at .agents/skills/{action_name}/SKILL.md")
+                        print(f"     Instruction: implement the handler in execute() following the existing pattern.")
+                        speak(f"Noted. I'll log {action_name} for future implementation.")
             else:
                 speak("Sorry, all AI providers are down right now.")
 
