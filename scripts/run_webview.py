@@ -10,7 +10,17 @@ import time
 
 # Import backend logic
 import backend.windows_agent as _agent_backend
-from backend.windows_agent import ask_llm as _ask_llm_backend, execute as _execute_backend, global_memory, listen as _listen_backend, _check_missing_tool_suggestions, EXECUTION_LOG_PATH, MISSING_TOOLS_PATH
+from backend.windows_agent import (
+    ask_llm as _ask_llm_backend,
+    execute as _execute_backend,
+    global_memory,
+    listen as _listen_backend,
+    _check_missing_tool_suggestions,
+    classify_intent as _classify_intent,
+    run_react_loop as _run_react_loop,
+    EXECUTION_LOG_PATH,
+    MISSING_TOOLS_PATH,
+)
 
 import backend.safety as safety
 import backend.memory as memory
@@ -216,7 +226,62 @@ class Api:
             self._last_action = action_dict
             return {"action": "run_macro", "full": action_dict, "result": "Success"}
 
-        # Route regular commands to LLM
+        # ── Intent classification pre-step ──────────────────────────────────
+        print(f"[Api] Classifying intent for: {command!r}")
+        intent_result = _classify_intent(command, global_memory.get_history())
+        intent_label   = intent_result.get("intent", "SINGLE_ACTION")
+        intent_reason  = intent_result.get("reason", "")
+        intent_hints   = intent_result.get("steps_hint", [])
+        print(f"[Api] Intent: {intent_label} — {intent_reason}")
+
+        # ── UNSAFE: block immediately ────────────────────────────────────────
+        if intent_label == "UNSAFE":
+            block_msg = f"⛔ Command blocked: {intent_reason}"
+            action_dict = {"action": "reply", "value": block_msg}
+            self._last_action = action_dict
+            return {
+                "action": "reply",
+                "full": action_dict,
+                "result": "Blocked",
+                "intent": "UNSAFE",
+                "intent_reason": intent_reason,
+            }
+
+        # ── QUESTION: skip action routing, use conversational reply ──────────
+        if intent_label == "QUESTION":
+            from backend.windows_agent import conversational_reply as _conv_reply
+            reply_text = _conv_reply(command, global_memory.get_history())
+            action_dict = {"action": "reply", "value": reply_text}
+            global_memory.add_agent(action_dict)
+            self._last_action = action_dict
+            return {
+                "action": "reply",
+                "full": action_dict,
+                "result": "Success",
+                "intent": "QUESTION",
+                "intent_reason": intent_reason,
+            }
+
+        # ── MULTI_STEP: signal the frontend to call react_loop instead ───────
+        if intent_label == "MULTI_STEP":
+            action_dict = {
+                "action": "multi_step",
+                "value": command,
+                "steps_hint": intent_hints,
+            }
+            self._last_action = action_dict
+            self._last_react_goal = command
+            self._last_react_hints = intent_hints
+            return {
+                "action": "multi_step",
+                "full": action_dict,
+                "result": "ReAct loop required",
+                "intent": "MULTI_STEP",
+                "intent_reason": intent_reason,
+                "steps_hint": intent_hints,
+            }
+
+        # ── SINGLE_ACTION: normal LLM routing ───────────────────────────────
         action_dict = _ask_llm_backend(command, global_memory.get_history())
 
         if action_dict:
@@ -226,6 +291,8 @@ class Api:
                 "action": str(action_dict.get("action", "unknown action")),
                 "full":   action_dict,
                 "result": "Success",
+                "intent": "SINGLE_ACTION",
+                "intent_reason": intent_reason,
             }
 
         self._last_action = None
@@ -311,6 +378,93 @@ class Api:
             return str(result)
         else:
             return "Error: Could not retrieve action for execution."
+
+    def react_loop(self, goal: str = None, steps_hint_json: str = "[]"):
+        """
+        Runs the ReAct multi-step loop for a complex goal.
+        Streams step updates to the UI via evaluate_js as they complete.
+        Runs in a background thread so pywebview does not block.
+        
+        Args:
+            goal:            The user's original goal string. Defaults to the
+                             last detected multi-step goal.
+            steps_hint_json: JSON array of pre-planned step strings from the
+                             classifier (optional, stringified for JS compat).
+        """
+        if not goal:
+            goal = getattr(self, "_last_react_goal", "")
+        if not goal:
+            return "Error: No goal provided for react_loop."
+
+        try:
+            hints = json.loads(steps_hint_json) if steps_hint_json else []
+        except Exception:
+            hints = getattr(self, "_last_react_hints", [])
+
+        print(f"[Api] react_loop started for goal: {goal!r}")
+
+        def _run():
+            try:
+                win = webview.windows[0]
+
+                def _push(msg_type: str, text: str):
+                    safe_text = json.dumps(str(text))
+                    win.evaluate_js(
+                        f"if (window.addMessageFromPython) "
+                        f"window.addMessageFromPython({json.dumps(msg_type)}, {safe_text});"
+                    )
+
+                # Announce start
+                _push("react_start", f"🧠 Starting multi-step task: {goal}")
+                if hints:
+                    plan_str = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(hints))
+                    _push("react_plan", f"📋 Planned steps:\n{plan_str}")
+
+                def step_callback(step_index: int, action_dict: dict, result_str: str):
+                    action_name = action_dict.get("action", "")
+                    if action_name == "done":
+                        _push("react_done", f"✅ {result_str}")
+                    else:
+                        step_num = step_index + 1
+                        _push("react_step", f"⚡ Step {step_num}: {action_name}")
+                        if result_str and result_str.lower().startswith("error"):
+                            _push("error", result_str)
+                        else:
+                            _push("react_result", f"  ↳ {result_str}")
+
+                react_result = _run_react_loop(
+                    goal=goal,
+                    steps_hint=hints,
+                    max_steps=10,
+                    history=global_memory.get_history(),
+                    step_callback=step_callback,
+                )
+
+                # Push final summary
+                if react_result["completed"] and not react_result["aborted"]:
+                    _push("react_done", f"✅ Task complete: {react_result['summary']}")
+                elif react_result["aborted"]:
+                    _push("error", f"⚠️ {react_result['summary']}")
+                else:
+                    _push("react_done", f"🏁 {react_result['summary']}")
+
+                # Add the result to conversation memory
+                summary_action = {"action": "react_complete", "value": react_result["summary"]}
+                global_memory.add_agent(summary_action)
+
+            except Exception as e:
+                print(f"[Api] react_loop error: {e}")
+                try:
+                    win = webview.windows[0]
+                    win.evaluate_js(
+                        f"if (window.addMessageFromPython) "
+                        f"window.addMessageFromPython('error', {json.dumps(f'ReAct loop error: {e}')});"
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+        return "ReAct loop started."
 
     def clear_memory(self):
         print("[Api] Clearing memory")

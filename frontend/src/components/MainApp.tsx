@@ -39,6 +39,7 @@ declare global {
         get_profile: () => Promise<string>;
         set_profile: (field: string, value: string) => Promise<string>;
         set_profile_batch: (profileJson: string) => Promise<string>;
+        react_loop: (goal?: string, steps_hint_json?: string) => Promise<string>;
       };
     };
     onClipboardNotification?: (payload: { text: string; type: 'url' | 'path' }) => void;
@@ -50,7 +51,7 @@ declare global {
 }
 
 /* ─── Types ────────────────────────────────────────────────────────────────── */
-type Role = 'rage' | 'user' | 'result' | 'error' | 'action' | 'sys';
+type Role = 'rage' | 'user' | 'result' | 'error' | 'action' | 'sys' | 'react_start' | 'react_plan' | 'react_step' | 'react_result' | 'react_done';
 interface Msg { id: number; role: Role; text: string; ts: string; command?: string; action_taken?: any; }
 type PanelId = 'uplink' | 'apps' | 'input' | 'file' | 'system' | 'comm';
 type ToneId =
@@ -421,9 +422,20 @@ export default function MainApp() {
     try {
       const res = await window.pywebview!.api.ask_llm(raw);
       if (res?.action) {
-        addMsg('action', `⚡ ACTION → ${res.action}`);
         lastActionRef.current = res.full || { action: res.action };
         lastCommandRef.current = raw;
+
+        if (res.action === 'multi_step') {
+          addMsg('action', `🧠 AGENT WILL PLAN & EXECUTE RE-ACT LOOP`);
+          const hintsJson = JSON.stringify((res as any).steps_hint || []);
+          const startRes = await window.pywebview!.api.react_loop(raw, hintsJson);
+          addMsg('sys', startRes);
+          setBusy(false);
+          isSubmittingRef.current = false;
+          return;
+        }
+
+        addMsg('action', `⚡ ACTION → ${res.action}`);
 
         // Check if destructive action requires confirmation
         if (res.action === 'delete_file' || res.action === 'delete_folder') {
@@ -706,6 +718,109 @@ export default function MainApp() {
     if (m.role === 'action') return (
       <div key={m.id} style={{ ...baseStyle, padding: '6px 14px', background: 'rgba(0,40,30,0.4)', border: '1px solid rgba(0,255,156,0.25)', fontSize: 11, color: '#19ff9d', fontWeight: 700 }}>
         {m.text}
+      </div>
+    );
+
+    if (m.role === 'react_start') return (
+      <div key={m.id} style={{
+        fontFamily: 'JetBrains Mono',
+        margin: '10px 0',
+        padding: '12px 16px',
+        background: 'rgba(88, 28, 135, 0.08)',
+        borderLeft: '4px solid #a78bfa',
+        borderRight: '1px solid rgba(139, 92, 246, 0.2)',
+        borderTop: '1px solid rgba(139, 92, 246, 0.2)',
+        borderBottom: '1px solid rgba(139, 92, 246, 0.2)',
+        boxShadow: '0 0 15px rgba(139, 92, 246, 0.1)',
+        position: 'relative',
+        overflow: 'hidden'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c084fc', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 6 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>psychology</span>
+          THINKING LAYER: ReAct LOOP RUNNING
+        </div>
+        <div style={{ fontSize: 11, color: '#e9d5ff', lineHeight: 1.5 }}>
+          {m.text}
+        </div>
+      </div>
+    );
+
+    if (m.role === 'react_plan') return (
+      <div key={m.id} style={{
+        fontFamily: 'JetBrains Mono',
+        margin: '6px 0',
+        padding: '10px 14px',
+        background: 'rgba(30, 41, 59, 0.25)',
+        border: '1px solid rgba(148, 163, 184, 0.2)',
+        fontSize: 11,
+        color: '#cbd5e1',
+        whiteSpace: 'pre-wrap'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#94a3b8', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>assignment</span>
+          Task Decomposition Plan
+        </div>
+        {m.text}
+      </div>
+    );
+
+    if (m.role === 'react_step') return (
+      <div key={m.id} style={{
+        fontFamily: 'JetBrains Mono',
+        margin: '8px 0 4px',
+        padding: '8px 12px',
+        background: 'rgba(251, 191, 36, 0.05)',
+        borderLeft: '3px solid #fbbf24',
+        borderRight: '1px solid rgba(251, 191, 36, 0.15)',
+        borderTop: '1px solid rgba(251, 191, 36, 0.15)',
+        borderBottom: '1px solid rgba(251, 191, 36, 0.15)',
+        fontSize: 11,
+        color: '#fbbf24',
+        fontWeight: 600
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>pending</span>
+          {m.text}
+        </div>
+      </div>
+    );
+
+    if (m.role === 'react_result') return (
+      <div key={m.id} style={{
+        fontFamily: 'JetBrains Mono',
+        margin: '0 0 8px 12px',
+        padding: '6px 12px',
+        background: 'rgba(13, 148, 136, 0.04)',
+        borderLeft: '2px dashed rgba(13, 148, 136, 0.3)',
+        fontSize: 10,
+        color: '#2dd4bf',
+        whiteSpace: 'pre-wrap'
+      }}>
+        {m.text}
+      </div>
+    );
+
+    if (m.role === 'react_done') return (
+      <div key={m.id} style={{
+        fontFamily: 'JetBrains Mono',
+        margin: '10px 0',
+        padding: '12px 16px',
+        background: 'rgba(16, 185, 129, 0.08)',
+        borderLeft: '4px solid #10b981',
+        borderRight: '1px solid rgba(16, 185, 129, 0.2)',
+        borderTop: '1px solid rgba(16, 185, 129, 0.2)',
+        borderBottom: '1px solid rgba(16, 185, 129, 0.2)',
+        boxShadow: '0 0 15px rgba(16, 185, 129, 0.1)',
+        position: 'relative',
+        overflow: 'hidden'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#34d399', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 6 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>task_alt</span>
+          SEQUENCE COMPLETE
+        </div>
+        <div style={{ fontSize: 11, color: '#a7f3d0', lineHeight: 1.5 }}>
+          {m.text}
+        </div>
       </div>
     );
 

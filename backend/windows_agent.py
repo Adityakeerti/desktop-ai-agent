@@ -735,6 +735,290 @@ def ask_llm(command: str, history: list = None) -> dict:
     return None
 
 
+
+# ──────────────────────────────────────────────────────────────
+# INTENT CLASSIFIER  — pre-step that labels the user command
+# ──────────────────────────────────────────────────────────────
+INTENT_LABELS = ("SINGLE_ACTION", "MULTI_STEP", "QUESTION", "UNSAFE")
+
+def _build_intent_prompt(command: str, history: list = None) -> str:
+    history_str = ""
+    if history:
+        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-4:]) + "\n\n"
+
+    return f"""You are an intent classifier for a Windows automation agent.
+Classify the user's command into exactly ONE of these labels:
+
+SINGLE_ACTION  - A single, atomic desktop action (open app, set volume, take screenshot, read file, get weather, send message, etc.)
+MULTI_STEP     - Requires 2+ sequential actions with results feeding into later steps (e.g., "research X and email me", "find files and zip them", "search for jobs and send summary")
+QUESTION       - A conversational question or request for information the agent can answer without executing OS actions (e.g., "what can you do?", "how are you?", "what is Python?")
+UNSAFE         - The command requests dangerous, destructive, or harmful operations (format drive, delete system32, mass file deletion without path, registry wipes, etc.)
+
+{history_str}Command: "{command}"
+
+Respond with ONLY a JSON object with these fields:
+{{"intent": "<LABEL>", "reason": "<one sentence>", "steps_hint": ["step1", "step2", ...] }}
+
+For SINGLE_ACTION or QUESTION or UNSAFE, steps_hint should be an empty array [].
+For MULTI_STEP, steps_hint must list 2-8 plain-English steps the agent should take in order.
+
+RESPOND WITH ONLY THE JSON OBJECT."""
+
+
+def classify_intent(command: str, history: list = None) -> dict:
+    """Classify a user command before routing it.
+
+    Returns a dict with keys: intent, reason, steps_hint.
+    Falls back to SINGLE_ACTION on any error so the normal flow continues.
+    """
+    raw_prompt = "__RAW_PROMPT__:" + _build_intent_prompt(command, history)
+
+    if SELECTED_PROVIDER and SELECTED_PROVIDER != "Auto (Fallback)":
+        chain = [(n, fn) for n, fn in PROVIDERS if n == SELECTED_PROVIDER]
+        if not chain:
+            chain = PROVIDERS
+    else:
+        chain = PROVIDERS
+
+    for name, func in chain:
+        try:
+            result = func(raw_prompt)
+            if isinstance(result, dict) and "intent" in result:
+                label = result.get("intent", "SINGLE_ACTION").upper()
+                if label not in INTENT_LABELS:
+                    label = "SINGLE_ACTION"
+                result["intent"] = label
+                return result
+        except Exception as e:
+            log.debug("classify_intent: provider %s failed: %s", name, e)
+            continue
+
+    return {"intent": "SINGLE_ACTION", "reason": "classifier unavailable", "steps_hint": []}
+
+
+# ──────────────────────────────────────────────────────────────
+# REACT LOOP  — Reason + Act iterative multi-step engine
+# ──────────────────────────────────────────────────────────────
+
+def _build_react_step_prompt(
+    original_goal: str,
+    steps_done: list[dict],
+    step_index: int,
+    max_steps: int,
+    history: list = None,
+) -> str:
+    """Build the prompt for a single ReAct step.
+
+    Injects the original goal, what has been done so far, and asks the LLM
+    whether to act next or declare the goal complete.
+    """
+    # Load persona details (same as build_prompt)
+    try:
+        import backend.memory as _mem
+        _profile = _mem.get_profile()
+    except Exception:
+        _profile = {}
+
+    _agent_name = _profile.get("agent_name", "JARVIS") or "JARVIS"
+    screen_w, screen_h = _get_screen_size()
+    import os as _os
+    home_dir = _os.path.expanduser("~").replace("\\", "/")
+
+    # Format completed steps
+    done_str = ""
+    if steps_done:
+        done_str = "STEPS COMPLETED SO FAR:\n"
+        for i, s in enumerate(steps_done, 1):
+            done_str += f"  Step {i}: Action={s.get('action')} → Result: {s.get('result', '')}\n"
+        done_str += "\n"
+
+    remaining = max_steps - step_index
+    history_str = ""
+    if history:
+        history_str = "SESSION CONTEXT:\n" + "\n".join(history[-4:]) + "\n\n"
+
+    # Reuse the full action catalogue from build_prompt but abbreviated here
+    return f"""You are {_agent_name}, a Windows automation agent executing a multi-step plan.
+
+ORIGINAL USER GOAL: "{original_goal}"
+CURRENT STEP: {step_index + 1} of up to {max_steps} (steps remaining budget: {remaining})
+
+{history_str}{done_str}ENVIRONMENT:
+- OS: Windows, Screen: {screen_w}×{screen_h}
+- Common paths: Desktop={home_dir}/Desktop, Downloads={home_dir}/Downloads
+
+Decide the NEXT action needed to make progress toward the goal, or declare completion.
+
+CRITICAL RULES:
+1. Respond with ONLY valid JSON — no markdown fences, no extra text.
+2. If the goal is fully achieved based on steps done, respond: {{"action":"done","value":"<summary of what was accomplished>"}}
+3. If you need more information before proceeding, respond: {{"action":"reply","value":"<question>"}}
+4. Pick ONE atomic action from the available list below.
+5. Use previous step results as context — reference file paths, URLs, or data from earlier results.
+6. CRITICAL: If you are unsure what to do, use "reply" to ask for clarification. Do NOT guess destructive actions.
+
+AVAILABLE ACTIONS (same as normal agent):
+{{"action":"open_app","value":"chrome","url":"https://..."}}
+{{"action":"open_url","value":"https://..."}}
+{{"action":"search_web","value":"query"}}
+{{"action":"run_powershell","value":"command"}}
+{{"action":"run_command","value":"cmd"}}
+{{"action":"get_system_info"}}
+{{"action":"screenshot","path":"{home_dir}/Desktop/shot.png"}}
+{{"action":"read_file","path":"..."}}
+{{"action":"create_file","path":"...","content":"..."}}
+{{"action":"list_files","path":"..."}}
+{{"action":"type_text","value":"..."}}
+{{"action":"press_keys","value":"ctrl+c"}}
+{{"action":"click_element","value":"..."}}
+{{"action":"get_clipboard"}}
+{{"action":"set_clipboard","value":"..."}}
+{{"action":"send_whatsapp","contact":"...","message":"..."}}
+{{"action":"get_weather","city":"..."}}
+{{"action":"set_volume","value":70}}
+{{"action":"say","value":"..."}}
+{{"action":"reply","value":"..."}}
+{{"action":"done","value":"<completion summary>"}}
+
+RESPOND WITH ONLY THE JSON OBJECT."""
+
+
+def run_react_loop(
+    goal: str,
+    steps_hint: list[str] = None,
+    max_steps: int = 10,
+    history: list = None,
+    step_callback=None,
+) -> dict:
+    """Execute a multi-step ReAct (Reason + Act) loop for a complex goal.
+
+    Args:
+        goal: The original natural-language user goal.
+        steps_hint: Optional list of pre-planned step descriptions from the classifier.
+        max_steps: Hard cap on iterations to prevent infinite loops (default 10).
+        history: Conversation history from ConversationMemory.
+        step_callback: Optional callable(step_index, action_dict, result_str) called
+                       after each step for real-time UI streaming.
+
+    Returns:
+        dict with keys:
+            completed  (bool)  — True if "done" action was reached
+            steps      (list)  — list of {action, result} dicts
+            summary    (str)   — final summary from the "done" action or last result
+            aborted    (bool)  — True if emergency-stopped or max_steps hit
+    """
+    import backend.safety as safety
+
+    steps_done: list[dict] = []
+    summary = ""
+    completed = False
+    aborted = False
+
+    print(f"  [ReAct] Starting loop for goal: {goal!r} (max_steps={max_steps})")
+    if steps_hint:
+        print(f"  [ReAct] Planner hints: {steps_hint}")
+
+    for step_index in range(max_steps):
+        # Emergency stop check
+        if safety.is_emergency_stopped():
+            print("  [ReAct] Emergency stop triggered — aborting loop.")
+            aborted = True
+            summary = "Aborted: Emergency Stop was activated."
+            break
+
+        # Build context-enriched prompt for this step
+        raw_prompt = "__RAW_PROMPT__:" + _build_react_step_prompt(
+            original_goal=goal,
+            steps_done=steps_done,
+            step_index=step_index,
+            max_steps=max_steps,
+            history=history,
+        )
+
+        # Ask LLM for next action
+        print(f"  [ReAct] Step {step_index + 1}: asking LLM for next action...")
+        action_dict = None
+
+        if SELECTED_PROVIDER and SELECTED_PROVIDER != "Auto (Fallback)":
+            chain = [(n, fn) for n, fn in PROVIDERS if n == SELECTED_PROVIDER]
+            if not chain:
+                chain = PROVIDERS
+        else:
+            chain = PROVIDERS
+
+        for provider_name, func in chain:
+            try:
+                action_dict = func(raw_prompt)
+                print(f"  [ReAct] Step {step_index + 1} action: {action_dict}")
+                break
+            except Exception as e:
+                log.debug("run_react_loop: provider %s failed at step %d: %s", provider_name, step_index, e)
+                import time as _t
+                _t.sleep(0.3)
+                continue
+
+        if not action_dict:
+            print(f"  [ReAct] Step {step_index + 1}: all providers failed — aborting.")
+            aborted = True
+            summary = "Aborted: LLM providers unavailable during multi-step execution."
+            break
+
+        action_name = action_dict.get("action", "")
+
+        # Terminal condition: goal achieved
+        if action_name == "done":
+            summary = action_dict.get("value", "Goal completed.")
+            completed = True
+            print(f"  [ReAct] DONE at step {step_index + 1}: {summary}")
+            if step_callback:
+                step_callback(step_index, action_dict, summary)
+            break
+
+        # Execute the action
+        result_str = execute(action_dict, goal)
+        print(f"  [ReAct] Step {step_index + 1} result: {result_str[:200]}")
+
+        # Record this step
+        step_record = {
+            "step": step_index + 1,
+            "action": action_name,
+            "action_dict": action_dict,
+            "result": result_str,
+        }
+        steps_done.append(step_record)
+
+        # Notify UI (for real-time streaming)
+        if step_callback:
+            step_callback(step_index, action_dict, result_str)
+
+        # If a conversational reply or error was returned, stop looping
+        if action_name == "reply":
+            summary = result_str
+            completed = True
+            break
+
+        # Guard: if result is an error on the very first step, abort early
+        if step_index == 0 and result_str.lower().startswith("error:"):
+            summary = f"Aborted early: {result_str}"
+            aborted = True
+            break
+
+    else:
+        # Exhausted max_steps
+        print(f"  [ReAct] Max steps ({max_steps}) reached without completion.")
+        aborted = True
+        summary = f"Reached maximum of {max_steps} steps. Task may be partially complete."
+        if steps_done:
+            summary += f" Last result: {steps_done[-1]['result']}"
+
+    return {
+        "completed": completed,
+        "aborted": aborted,
+        "steps": steps_done,
+        "summary": summary,
+    }
+
+
 def edit_macro_steps_via_llm(name: str, steps: list[str], instruction: str) -> list[str]:
     """Uses the active LLM provider to modify a macro's steps based on natural language instructions.
     
