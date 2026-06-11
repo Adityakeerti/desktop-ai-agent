@@ -14,11 +14,15 @@ declare global {
         get_active_provider: ()           => Promise<string>;
         get_system_info_quick: ()         => Promise<{ cpu: number|string; ram_used: number|string; ram_total: number|string; ram_pct: number|string }>;
         save_chat_log      : (t: string)  => Promise<string>;
+        download_chat_log? : (t: string)  => Promise<string>;
         close_window       : ()           => Promise<void>;
         minimize_window    : ()           => Promise<void>;
         listen             : ()           => Promise<string>;
         toggle_fullscreen  : ()           => Promise<boolean>;
         is_fullscreen      : ()           => Promise<boolean>;
+        report_feedback    : (f: string)  => Promise<string>;
+        get_tool_suggestions: ()          => Promise<string>;
+        mark_tool_suggested: (a: string)  => Promise<string>;
       };
     };
   }
@@ -105,16 +109,38 @@ export default function MainApp() {
   const [showClearModal, setShowClearModal] = useState(false);
   const [showMicModal, setShowMicModal]     = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [feedbackStates, setFeedbackStates] = useState<Record<number, {correct: boolean|null; showInput: boolean; inputValue: string}>>({});
   const chatEndRef   = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
   const msgCounter   = useRef(0);
   const historyBuf   = useRef<string[]>([]);
   const historyIdx   = useRef(-1);
+  const lastActionRef = useRef<Record<string,unknown>|null>(null);
+  const lastCommandRef = useRef<string>('');
   // File panel state
   const [filePath, setFilePath]     = useState('');
   // Comm panel state
   const [urlInput, setUrlInput]     = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [toolSuggestions, setToolSuggestions] = useState<any[]>([]);
+
+  /* ── Poll for missing tool suggestions ────────────────────────────── */
+  useEffect(() => {
+    const fetchSuggestions = async () => {
+      if (apiAvailable() && window.pywebview?.api?.get_tool_suggestions) {
+        try {
+          const res = await window.pywebview.api.get_tool_suggestions();
+          const suggestions = JSON.parse(res);
+          setToolSuggestions(suggestions);
+        } catch (e) {
+          // ignore
+        }
+      }
+    };
+    fetchSuggestions();
+    const id = setInterval(fetchSuggestions, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   /* ── Add message ──────────────────────────────────────────────────────── */
   const addMsg = useCallback((role: Role, text: string) => {
@@ -195,6 +221,8 @@ export default function MainApp() {
       const res = await window.pywebview!.api.ask_llm(raw);
       if (res?.action) {
         addMsg('action', `⚡ ACTION → ${res.action}`);
+        lastActionRef.current = res.full || { action: res.action };
+        lastCommandRef.current = raw;
         const result = await window.pywebview!.api.execute_action(res.action);
         if (result.toLowerCase().startsWith('error')) {
           addMsg('error', result);
@@ -202,9 +230,11 @@ export default function MainApp() {
           addMsg('result', result);
         }
       } else {
+        lastActionRef.current = null;
         addMsg('error', 'Command parsing failed — all LLM providers offline or unresponsive.');
       }
     } catch (e: any) {
+      lastActionRef.current = null;
       addMsg('error', 'CRITICAL ERROR: ' + (e?.message ?? String(e)));
     }
     setBusy(false);
@@ -333,13 +363,29 @@ export default function MainApp() {
     }
   }
 
-  /* ── Save chat log ────────────────────────────────────────────────────── */
-  function saveChatLog() {
+  /* ── Save/Copy chat log ────────────────────────────────────────────────── */
+  function copyChatLog() {
     const text = msgs.map(m => `[${m.ts}] ${m.role.toUpperCase()}: ${m.text}`).join('\n');
     if (apiAvailable()) {
       window.pywebview!.api.save_chat_log(text).then(msg => addMsg('sys', msg)).catch(() => {});
     } else {
       navigator.clipboard.writeText(text).then(() => addMsg('sys', 'Chat log copied to clipboard.'));
+    }
+  }
+
+  function downloadChatLog() {
+    const text = msgs.map(m => `[${m.ts}] ${m.role.toUpperCase()}: ${m.text}`).join('\n');
+    if (apiAvailable() && window.pywebview!.api.download_chat_log) {
+      window.pywebview!.api.download_chat_log(text).then(msg => addMsg('sys', msg)).catch(() => {});
+    } else {
+      const element = document.createElement("a");
+      const file = new Blob([text], {type: 'text/plain'});
+      element.href = URL.createObjectURL(file);
+      element.download = "rage_chat_log.txt";
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
+      addMsg('sys', 'Chat log download initiated.');
     }
   }
 
@@ -390,17 +436,111 @@ export default function MainApp() {
       </div>
     );
 
-    if (m.role === 'result') return (
-      <div key={m.id} style={{ ...baseStyle, padding: '10px 14px', background: 'rgba(0,30,20,0.5)', border: '1px solid rgba(0,255,156,0.15)', fontSize: 11, color: '#00dbe9', whiteSpace: 'pre-wrap' }}>
-        {m.text}
-      </div>
-    );
-
-    if (m.role === 'error') return (
-      <div key={m.id} style={{ ...baseStyle, padding: '8px 14px', background: 'rgba(40,5,5,0.7)', border: '1px solid rgba(255,0,60,0.35)', fontSize: 11, color: '#ff525c' }}>
-        {m.text}
-      </div>
-    );
+    if (m.role === 'result' || m.role === 'error') {
+      const fb = feedbackStates[m.id];
+      const isVoted = fb?.correct === true || fb?.correct === false;
+      return (
+        <div key={m.id}>
+          <div style={{ ...baseStyle, padding: '10px 14px', background: m.role === 'error' ? 'rgba(40,5,5,0.7)' : 'rgba(0,30,20,0.5)', border: m.role === 'error' ? '1px solid rgba(255,0,60,0.35)' : '1px solid rgba(0,255,156,0.15)', fontSize: 11, color: m.role === 'error' ? '#ff525c' : '#00dbe9', whiteSpace: 'pre-wrap' }}>
+            {m.text}
+          </div>
+          {!isVoted && !busy && lastActionRef.current && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 14px 8px' }}>
+              <span style={{ fontFamily: 'JetBrains Mono', fontSize: 8, color: '#5f3e3e', marginRight: 4 }}>CORRECT?</span>
+              <button
+                onClick={() => {
+                  setFeedbackStates(prev => ({ ...prev, [m.id]: { correct: true, showInput: false, inputValue: '' } }));
+                  if (apiAvailable()) {
+                    window.pywebview!.api.report_feedback(JSON.stringify({
+                      command: lastCommandRef.current,
+                      action_taken: lastActionRef.current,
+                      correct: true,
+                      correct_action: null,
+                    }));
+                  }
+                }}
+                style={{ background: 'none', border: '1px solid rgba(0,255,156,0.3)', color: '#00FF9C', cursor: 'pointer', fontSize: 14, padding: '2px 6px', lineHeight: 1 }}
+                title="Correct"
+              >👍</button>
+              <button
+                onClick={() => {
+                  setFeedbackStates(prev => ({ ...prev, [m.id]: { correct: false, showInput: false, inputValue: '' } }));
+                }}
+                style={{ background: 'none', border: '1px solid rgba(255,0,60,0.3)', color: '#ff525c', cursor: 'pointer', fontSize: 14, padding: '2px 6px', lineHeight: 1 }}
+                title="Wrong — tell me the correct action"
+              >👎</button>
+            </div>
+          )}
+          {fb?.correct === false && !fb?.showInput && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 14px 8px' }}>
+              <button
+                onClick={() => {
+                  setFeedbackStates(prev => ({ ...prev, [m.id]: { ...prev[m.id], showInput: true } }));
+                }}
+                style={{ background: 'rgba(255,0,60,0.1)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 9, padding: '4px 10px' }}
+              >SPECIFY CORRECT ACTION</button>
+              <button
+                onClick={() => {
+                  setFeedbackStates(prev => ({ ...prev, [m.id]: { ...prev[m.id], correct: null, showInput: false, inputValue: '' } }));
+                }}
+                style={{ background: 'none', border: '1px solid rgba(154,112,112,0.3)', color: '#9a7070', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 8, padding: '4px 8px' }}
+              >SKIP</button>
+            </div>
+          )}
+          {fb?.showInput && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 14px 8px' }}>
+              <input
+                placeholder='e.g. "open the calculator" or {"action": "..."}'
+                value={fb.inputValue}
+                onChange={e => {
+                  const val = e.target.value;
+                  setFeedbackStates(prev => ({ ...prev, [m.id]: { ...prev[m.id], inputValue: val } }));
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && fb.inputValue.trim()) {
+                    let correctAction: any = null;
+                    try { correctAction = JSON.parse(fb.inputValue.trim()); } catch { correctAction = fb.inputValue.trim(); }
+                    if (apiAvailable()) {
+                      window.pywebview!.api.report_feedback(JSON.stringify({
+                        command: lastCommandRef.current,
+                        action_taken: lastActionRef.current,
+                        correct: false,
+                        correct_action: correctAction,
+                      }));
+                    }
+                    setFeedbackStates(prev => ({ ...prev, [m.id]: { ...prev[m.id], correct: false, showInput: false } }));
+                  }
+                }}
+                style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+              />
+              <button
+                onClick={() => {
+                  if (fb.inputValue.trim()) {
+                    let correctAction: any = null;
+                    try { correctAction = JSON.parse(fb.inputValue.trim()); } catch { correctAction = fb.inputValue.trim(); }
+                    if (apiAvailable()) {
+                      window.pywebview!.api.report_feedback(JSON.stringify({
+                        command: lastCommandRef.current,
+                        action_taken: lastActionRef.current,
+                        correct: false,
+                        correct_action: correctAction,
+                      }));
+                    }
+                    setFeedbackStates(prev => ({ ...prev, [m.id]: { ...prev[m.id], correct: false, showInput: false } }));
+                  }
+                }}
+                style={{ padding: '6px 12px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 9 }}
+              >SUBMIT</button>
+            </div>
+          )}
+          {isVoted && (
+            <div style={{ padding: '2px 14px 6px', fontFamily: 'JetBrains Mono', fontSize: 8, color: fb?.correct ? '#19ff9d' : '#5f3e3e' }}>
+              {fb?.correct ? '✓ FEEDBACK RECORDED (correct)' : '✗ FEEDBACK RECORDED'}
+            </div>
+          )}
+        </div>
+      );
+    }
 
     // sys
     return (
@@ -649,6 +789,24 @@ export default function MainApp() {
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden" style={{ background: '#0d0505' }}>
 
+      {/* ═══ TOOL SUGGESTION TOASTS ═══════════════════════════════════ */}
+      {toolSuggestions.length > 0 && (
+        <div style={{ position: 'absolute', top: 40, right: 20, zIndex: 50, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {toolSuggestions.map(s => (
+            <div key={s.action_requested} style={{ padding: 16, background: '#150808', border: '1px solid rgba(255,180,0,0.4)', fontFamily: 'JetBrains Mono', width: 320, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#ffb400', marginBottom: 6 }}>💡 SUGGESTED SKILL</div>
+              <div style={{ fontSize: 10, color: '#d0ba90', marginBottom: 12 }}>You've requested '{s.action_requested}' {s.frequency} times. Want to add it as a custom action?</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => {
+                  if (apiAvailable()) window.pywebview!.api.mark_tool_suggested(s.action_requested);
+                  setToolSuggestions(prev => prev.filter(p => p.action_requested !== s.action_requested));
+                }} style={{ flex: 1, padding: '6px', background: 'rgba(255,180,0,0.15)', border: '1px solid rgba(255,180,0,0.4)', color: '#ffb400', cursor: 'pointer', fontSize: 10, fontWeight: 700 }}>ACKNOWLEDGE</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ═══ CLEAR MODAL ══════════════════════════════════════════════ */}
       {showClearModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -696,10 +854,10 @@ export default function MainApp() {
 
 
           <div className="flex items-center gap-2 h-full" style={{ WebkitAppRegion: 'no-drag' } as any}>
-            {/* save chat log */}
+            {/* download chat log */}
             <button
-              title="Save chat log to clipboard"
-              onClick={saveChatLog}
+              title="Download chat log"
+              onClick={downloadChatLog}
               className="material-symbols-outlined h-full flex items-center"
               style={{ fontSize: 15, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
               onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#00dbe9'; }}
@@ -926,12 +1084,12 @@ export default function MainApp() {
                 <div className="flex items-center gap-2">
                   <button
                     title="Copy chat log to clipboard"
-                    onClick={saveChatLog}
+                    onClick={copyChatLog}
                     className="material-symbols-outlined"
                     style={{ fontSize: 13, color: '#8a6060', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.15s' }}
                     onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#00dbe9'; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#8a6060'; }}
-                  >sim_card_download</button>
+                  >content_copy</button>
                   <div className="flex items-center gap-1" style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#8a6060' }}>
                     <span className="material-symbols-outlined" style={{ fontSize: 11 }}>lock</span>
                     ENCRYPTED

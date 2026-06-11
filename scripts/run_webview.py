@@ -9,7 +9,7 @@ import json
 
 # Import backend logic
 import backend.windows_agent as _agent_backend
-from backend.windows_agent import ask_llm as _ask_llm_backend, execute as _execute_backend, global_memory, listen as _listen_backend
+from backend.windows_agent import ask_llm as _ask_llm_backend, execute as _execute_backend, global_memory, listen as _listen_backend, _check_missing_tool_suggestions
 
 try:
     import psutil
@@ -26,7 +26,7 @@ except ImportError:
 
 class Api:
     def __init__(self):
-        pass
+        self.file_lock = threading.Lock()
 
     # ── Core command pipeline ──────────────────────────────────────────────────
     
@@ -102,6 +102,53 @@ class Api:
         global_memory.clear()
         return "Cleared"
 
+    # ── Feedback + Tool Suggestions ─────────────────────────────────────────
+
+    def report_feedback(self, feedback_json: str):
+        """Receives feedback from the React UI: '{"command":"...", "action_taken":{...}, "correct":true/false, "correct_action":{...}}'
+
+        Appends to execution_log.jsonl.
+        """
+        print(f"[Api] Feedback received: {feedback_json[:200]}")
+        try:
+            fb = json.loads(feedback_json)
+            with self.file_lock:
+                with open("execution_log.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(fb) + "\n")
+            return "Feedback recorded"
+        except Exception as e:
+            return f"Feedback error: {e}"
+
+    def get_tool_suggestions(self):
+        """Returns list of missing tools with frequency >= 3 (Phase B)."""
+        suggestions = _check_missing_tool_suggestions()
+        return json.dumps(suggestions, indent=2)
+
+    def mark_tool_suggested(self, action_name: str):
+        """Marks a missing tool as suggested in missing_tools.json so the frontend doesn't re-prompt."""
+        missing_tools_file = "missing_tools.json"
+        try:
+            with self.file_lock:
+                if not os.path.exists(missing_tools_file):
+                    return "File not found"
+                with open(missing_tools_file, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+                
+                updated = False
+                for log in logs:
+                    if log.get("action_requested") == action_name:
+                        log["suggested"] = True
+                        updated = True
+                        break
+                
+                if updated:
+                    with open(missing_tools_file, "w", encoding="utf-8") as f:
+                        json.dump(logs, f, indent=2)
+                    return "Marked suggested"
+                return "Tool not found"
+        except Exception as e:
+            return f"Error: {e}"
+
     # ── Provider management ────────────────────────────────────────────────────
 
     def get_providers(self):
@@ -152,76 +199,28 @@ class Api:
                 return f"Clipboard error: {e}"
         return "pyperclip not installed."
 
-    # ── Voice input ────────────────────────────────────────────────────────────
-
-    def listen(self):
-        """Records audio from microphone until silence, then transcribes with Google STT."""
+    def download_chat_log(self, text: str):
+        """Opens a save file dialog and saves the chat log as a file."""
         try:
-            import sounddevice as sd
-            import numpy as np
-            from scipy.io.wavfile import write
-            import speech_recognition as sr
-            import tempfile
-            import os
-        except ImportError:
-            return "Error: Required audio modules not installed (sounddevice, numpy, scipy, SpeechRecognition)."
-
-        print("[Api] Starting microphone recording...")
-        
-        SAMPLE_RATE = 16000
-        CHUNK_DURATION = 0.1
-        SILENCE_DURATION = 1.5
-        MAX_DURATION = 10.0
-        
-        chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
-        max_chunks = int(MAX_DURATION / CHUNK_DURATION)
-        silence_chunks_limit = int(SILENCE_DURATION / CHUNK_DURATION)
-        
-        try:
-            print("[Api] Calibrating noise floor...")
-            calibration_audio = sd.rec(int(SAMPLE_RATE * 0.5), samplerate=SAMPLE_RATE, channels=1, dtype='int16')
-            sd.wait()
-            noise_floor = np.sqrt(np.mean(calibration_audio.astype(np.float32)**2))
-            threshold = max(noise_floor * 2.5, 150)
-            
-            print(f"[Api] Noise floor: {noise_floor:.2f}, Threshold: {threshold:.2f}")
-            
-            audio_data = []
-            silence_chunks = 0
-            
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16') as stream:
-                print("[Api] Listening...")
-                for i in range(max_chunks):
-                    chunk, overflowed = stream.read(chunk_samples)
-                    audio_data.append(chunk)
-                    
-                    volume = np.sqrt(np.mean(chunk.astype(np.float32)**2))
-                    if volume > threshold:
-                        silence_chunks = 0
+            win = webview.windows[0]
+            file_path = win.create_file_dialog(webview.SAVE_DIALOG, directory='', file_name='rage_chat_log.txt', file_types=('Text files (*.txt)', 'All files (*.*)'))
+            if file_path:
+                if isinstance(file_path, (tuple, list)):
+                    if len(file_path) > 0:
+                        path = file_path[0]
                     else:
-                        silence_chunks += 1
-                    
-                    if silence_chunks >= silence_chunks_limit and i > (1.0 / CHUNK_DURATION):
-                        print("[Api] Silence detected, stopping recording.")
-                        break
-
-            recording = np.concatenate(audio_data, axis=0)
-            temp_wav = os.path.join(tempfile.gettempdir(), "rage_voice_cmd.wav")
-            write(temp_wav, SAMPLE_RATE, recording)
-            
-            print("[Api] Transcribing audio...")
-            r = sr.Recognizer()
-            with sr.AudioFile(temp_wav) as source:
-                audio = r.record(source)
-            transcript = r.recognize_google(audio)
-            print(f"[Api] Transcription: {transcript}")
-            return transcript
-        except sr.UnknownValueError:
-            return "Error: Could not understand audio."
-        except sr.RequestError as e:
-            return f"Error: STT service unavailable ({e})."
+                        return "Save cancelled."
+                else:
+                    path = file_path
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                return f"Chat log saved to: {os.path.basename(path)}"
+            return "Save cancelled."
         except Exception as e:
-            return f"Error: {e}"
+            print(f"[Api] Download chat log error: {e}")
+            return f"Error saving file: {e}"
+
+
 
     # ── Window control ─────────────────────────────────────────────────────────
 
