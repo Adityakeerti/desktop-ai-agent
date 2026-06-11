@@ -269,6 +269,10 @@ class Api:
                 "value": command,
                 "steps_hint": intent_hints,
             }
+            try:
+                memory.record_interaction(command, action_dict)
+            except Exception as e:
+                print(f"[Api] Error logging multi-step command: {e}")
             self._last_action = action_dict
             self._last_react_goal = command
             self._last_react_hints = intent_hints
@@ -402,6 +406,7 @@ class Api:
             hints = getattr(self, "_last_react_hints", [])
 
         print(f"[Api] react_loop started for goal: {goal!r}")
+        self._react_loop_running = True
 
         def _run():
             try:
@@ -422,9 +427,7 @@ class Api:
 
                 def step_callback(step_index: int, action_dict: dict, result_str: str):
                     action_name = action_dict.get("action", "")
-                    if action_name == "done":
-                        _push("react_done", f"✅ {result_str}")
-                    else:
+                    if action_name != "done":
                         step_num = step_index + 1
                         _push("react_step", f"⚡ Step {step_num}: {action_name}")
                         if result_str and result_str.lower().startswith("error"):
@@ -443,6 +446,13 @@ class Api:
                 # Push final summary
                 if react_result["completed"] and not react_result["aborted"]:
                     _push("react_done", f"✅ Task complete: {react_result['summary']}")
+                    if hints:
+                        self._pending_multi_step_suggestion = {
+                            "type": "sequence",
+                            "steps": hints,
+                            "frequency": 1,
+                            "is_multi_step": True
+                        }
                 elif react_result["aborted"]:
                     _push("error", f"⚠️ {react_result['summary']}")
                 else:
@@ -462,6 +472,8 @@ class Api:
                     )
                 except Exception:
                     pass
+            finally:
+                self._react_loop_running = False
 
         threading.Thread(target=_run, daemon=True).start()
         return "ReAct loop started."
@@ -521,6 +533,30 @@ class Api:
     def get_sequence_suggestions(self):
         """Returns list of repetitive command sequences with frequency >= 3 that aren't already macros or dismissed."""
         try:
+            if getattr(self, "_react_loop_running", False):
+                return "[]"
+
+            filtered = []
+            
+            # Check for a pending multi-step suggestion
+            pending = getattr(self, "_pending_multi_step_suggestion", None)
+            if pending:
+                steps = pending.get("steps", [])
+                saved_macros = memory.list_macros()
+                saved_steps_lists = list(saved_macros.values())
+                
+                dismissed_file = os.path.expanduser("~/.jarvis/dismissed_sequences.json")
+                dismissed = []
+                if os.path.exists(dismissed_file):
+                    try:
+                        with open(dismissed_file, "r", encoding="utf-8") as f:
+                            dismissed = json.load(f)
+                    except Exception:
+                        pass
+                
+                if steps not in saved_steps_lists and steps not in dismissed:
+                    filtered.append(pending)
+
             raw_suggestions = memory.detect_repetitive_sequences(min_freq=3)
             # Filter out single-command suggestions to only suggest multi-step macros
             raw_suggestions = [s for s in raw_suggestions if s.get("type") == "sequence"]
@@ -539,12 +575,13 @@ class Api:
                 except Exception:
                     pass
                     
-            filtered = []
             for sug in raw_suggestions:
                 steps = sug.get("steps", [])
                 if steps in saved_steps_lists:
                     continue
                 if steps in dismissed:
+                    continue
+                if any(f.get("steps") == steps for f in filtered):
                     continue
                 filtered.append(sug)
                 
@@ -556,6 +593,8 @@ class Api:
     def dismiss_sequence_suggestion(self, steps):
         """Saves a sequence to dismissed_sequences.json so it's not suggested again."""
         try:
+            if getattr(self, "_pending_multi_step_suggestion", None) and self._pending_multi_step_suggestion.get("steps") == steps:
+                self._pending_multi_step_suggestion = None
             dismissed_file = os.path.expanduser("~/.jarvis/dismissed_sequences.json")
             os.makedirs(os.path.dirname(dismissed_file), exist_ok=True)
             dismissed = []

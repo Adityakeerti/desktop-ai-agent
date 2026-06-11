@@ -216,3 +216,168 @@ def test_destructive_action_allowed_in_sandbox():
     safety.set_sandbox_mode(False)
 
 
+class SequentialMockProvider:
+    def __init__(self, actions: list[dict]):
+        self.actions = actions
+        self.call_count = 0
+        
+    def __call__(self, command_or_prompt: str, history: list = None) -> dict:
+        if self.call_count < len(self.actions):
+            act = self.actions[self.call_count]
+            self.call_count += 1
+            return act
+        return {"action": "done", "value": "Finished."}
+
+
+def test_normalize_windows_command():
+    from backend.windows_agent import _normalize_windows_command
+    
+    # 1. Simple command with forward slashes
+    assert _normalize_windows_command("mkdir C:/Users/adity/Desktop/AgentLogs") == "mkdir C:\\Users\\adity\\Desktop\\AgentLogs"
+    
+    # 2. Command with spaces and quotes
+    assert _normalize_windows_command('mkdir "C:/Users/adity/Desktop/Agent Logs"') == 'mkdir "C:\\Users\\adity\\Desktop\\Agent Logs"'
+    
+    # 3. Switches should be preserved
+    assert _normalize_windows_command("ipconfig /all") == "ipconfig /all"
+    assert _normalize_windows_command("dir /s /b") == "dir /s /b"
+    
+    # 4. URLs should be preserved
+    assert _normalize_windows_command("curl https://example.com/file") == "curl https://example.com/file"
+    
+    # 5. Relative paths with forward slashes
+    assert _normalize_windows_command("copy file.txt folder/subfolder/file2.txt") == "copy file.txt folder\\subfolder\\file2.txt"
+
+
+def test_react_create_folder_clipboard_cpu():
+    import backend.windows_agent as wa
+    import tempfile
+    import shutil
+    import os
+    
+    temp_dir = tempfile.mkdtemp().replace("\\", "/")
+    
+    actions = [
+        {"action": "create_folder", "path": f"{temp_dir}/AgentLogs"},
+        {"action": "get_clipboard"},
+        {"action": "create_file", "path": f"{temp_dir}/AgentLogs/logs.txt", "content": "mocked clipboard contents"},
+        {"action": "get_system_info"},
+        {"action": "done", "value": "Successfully created folder, wrote clipboard, and retrieved system info."}
+    ]
+    
+    mock_provider = SequentialMockProvider(actions)
+    original_providers = wa.PROVIDERS
+    wa.PROVIDERS = [("MockProvider", mock_provider)]
+    
+    try:
+        res = wa.run_react_loop(
+            goal=f"Create a folder named AgentLogs in {temp_dir}, copy my clipboard contents into a new file logs.txt inside it, and get my CPU usage.",
+            max_steps=10
+        )
+        assert res["completed"]
+        assert not res["aborted"]
+        assert len(res["steps"]) == 4
+        
+        assert os.path.isdir(f"{temp_dir}/AgentLogs")
+        assert os.path.isfile(f"{temp_dir}/AgentLogs/logs.txt")
+        with open(f"{temp_dir}/AgentLogs/logs.txt", "r", encoding="utf-8") as f:
+            assert f.read() == "mocked clipboard contents"
+    finally:
+        wa.PROVIDERS = original_providers
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_react_weather_speak_volume():
+    import backend.windows_agent as wa
+    
+    actions = [
+        {"action": "get_weather", "city": "Tokyo"},
+        {"action": "say", "value": "Weather in Tokyo is +22°C"},
+        {"action": "set_volume", "value": 70},
+        {"action": "done", "value": "Checked weather, spoke out loud, and set volume to 70%."}
+    ]
+    
+    mock_provider = SequentialMockProvider(actions)
+    original_providers = wa.PROVIDERS
+    wa.PROVIDERS = [("MockProvider", mock_provider)]
+    
+    import backend.safety as safety
+    safety.set_sandbox_mode(True)
+    
+    try:
+        res = wa.run_react_loop(
+            goal="Check the weather in Tokyo, tell me about it out loud, and set system volume to 70 percent.",
+            max_steps=10
+        )
+        assert res["completed"]
+        assert not res["aborted"]
+        assert len(res["steps"]) == 3
+        
+        assert res["steps"][0]["action"] == "get_weather"
+        assert res["steps"][1]["action"] == "say"
+        assert res["steps"][2]["action"] == "set_volume"
+    finally:
+        wa.PROVIDERS = original_providers
+        safety.set_sandbox_mode(False)
+
+
+def test_react_loop_protection():
+    import backend.windows_agent as wa
+    
+    failing_action = {"action": "run_command", "value": "invalid_command_name"}
+    
+    class RepeatingMockProvider:
+        def __call__(self, command_or_prompt: str, history: list = None) -> dict:
+            return failing_action
+            
+    mock_provider = RepeatingMockProvider()
+    original_providers = wa.PROVIDERS
+    wa.PROVIDERS = [("MockProvider", mock_provider)]
+    
+    try:
+        res = wa.run_react_loop(
+            goal="Create AgentLogs folder on Desktop using invalid command syntax.",
+            max_steps=10
+        )
+        assert res["aborted"]
+        assert not res["completed"]
+        assert len(res["steps"]) == 2
+        assert "infinite loop" in res["summary"].lower()
+    finally:
+        wa.PROVIDERS = original_providers
+
+
+def test_react_three_desktop_actions():
+    import backend.windows_agent as wa
+    
+    actions = [
+        {"action": "open_url", "value": "https://youtube.com"},
+        {"action": "open_url", "value": "https://claude.ai"},
+        {"action": "open_app", "value": "visual studio code"},
+        {"action": "done", "value": "Opened YouTube, Claude, and VS Code."}
+    ]
+    
+    mock_provider = SequentialMockProvider(actions)
+    original_providers = wa.PROVIDERS
+    wa.PROVIDERS = [("MockProvider", mock_provider)]
+    
+    import backend.safety as safety
+    safety.set_sandbox_mode(True)
+    
+    try:
+        res = wa.run_react_loop(
+            goal="open youtube.com, claude.ai and then open VS Code",
+            max_steps=10
+        )
+        assert res["completed"]
+        assert not res["aborted"]
+        assert len(res["steps"]) == 3
+        assert res["steps"][0]["action"] == "open_url"
+        assert res["steps"][1]["action"] == "open_url"
+        assert res["steps"][2]["action"] == "open_app"
+    finally:
+        wa.PROVIDERS = original_providers
+        safety.set_sandbox_mode(False)
+
+
+

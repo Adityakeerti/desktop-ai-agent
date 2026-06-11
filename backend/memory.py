@@ -180,8 +180,8 @@ def detect_repetitive_sequences(min_freq: int = 3) -> list[dict]:
     
     suggestions = []
     
-    # 1. Look for sequences of length 2 and 3
-    for seq_len in (2, 3):
+    # 1. Look for sequences of length 3 and 2 (check 3 first to filter out sub-sequences of length 2)
+    for seq_len in (3, 2):
         counts = {}
         for i in range(len(cmds) - seq_len + 1):
             seq = tuple(cmds[i:i+seq_len])
@@ -192,11 +192,24 @@ def detect_repetitive_sequences(min_freq: int = 3) -> list[dict]:
             
         for seq, freq in counts.items():
             if freq >= min_freq:
-                suggestions.append({
-                    "type": "sequence",
-                    "steps": list(seq),
-                    "frequency": freq
-                })
+                # Deduplicate sub-sequences: if we are checking len 2, avoid adding it if it is a sub-sequence of an already added len 3 sequence
+                is_subseq = False
+                if seq_len == 2:
+                    for existing_sug in suggestions:
+                        if existing_sug.get("type") == "sequence":
+                            p_steps = existing_sug.get("steps", [])
+                            for start_idx in range(len(p_steps) - 1):
+                                if p_steps[start_idx : start_idx + 2] == list(seq):
+                                    is_subseq = True
+                                    break
+                            if is_subseq:
+                                break
+                if not is_subseq:
+                    suggestions.append({
+                        "type": "sequence",
+                        "steps": list(seq),
+                        "frequency": freq
+                    })
                 
     # 2. Look for single frequent commands (not already in sequences)
     counts_single = {}

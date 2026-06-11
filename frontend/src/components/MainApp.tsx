@@ -1363,8 +1363,12 @@ export default function MainApp() {
           ))}
           {sequenceSuggestions.map((s, idx) => (
             <div key={idx} style={{ padding: 16, background: '#150808', border: '1px solid rgba(0,219,233,0.4)', fontFamily: 'JetBrains Mono', width: 320, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#00dbe9', marginBottom: 6 }}>🧠 REPETITIVE TASK DETECTED</div>
-              <div style={{ fontSize: 10, color: '#ffdad8', marginBottom: 6 }}>You've run this sequence {s.frequency} times:</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#00dbe9', marginBottom: 6 }}>
+                {s.is_multi_step ? '💡 MULTI-STEP TASK COMPLETED' : '🧠 REPETITIVE TASK DETECTED'}
+              </div>
+              <div style={{ fontSize: 10, color: '#ffdad8', marginBottom: 6 }}>
+                {s.is_multi_step ? 'Would you like to save this task as a custom macro?' : `You've run this sequence ${s.frequency} times:`}
+              </div>
               <div style={{ fontSize: 9, color: '#af8786', background: 'rgba(0,0,0,0.3)', padding: 6, marginBottom: 12, borderLeft: '2px solid #00dbe9', whiteSpace: 'pre-wrap' }}>
                 {s.steps.join('\n➔ ')}
               </div>

@@ -749,8 +749,8 @@ def _build_intent_prompt(command: str, history: list = None) -> str:
     return f"""You are an intent classifier for a Windows automation agent.
 Classify the user's command into exactly ONE of these labels:
 
-SINGLE_ACTION  - A single, atomic desktop action (open app, set volume, take screenshot, read file, get weather, send message, etc.)
-MULTI_STEP     - Requires 2+ sequential actions with results feeding into later steps (e.g., "research X and email me", "find files and zip them", "search for jobs and send summary")
+SINGLE_ACTION  - A single, atomic desktop action that can be completed in a single step (e.g., just opening one app, just setting the volume once, just checking the weather once, just taking a screenshot, just replying to a greeting).
+MULTI_STEP     - Any command that requires 2 or more actions or steps, whether they are sequential, independent, or feed into each other (e.g., "check the weather AND tell me out loud AND set my volume to 70%", "create a folder AND copy files inside it", "open youtube, claude, AND then open VS Code", "research X AND email me").
 QUESTION       - A conversational question or request for information the agent can answer without executing OS actions (e.g., "what can you do?", "how are you?", "what is Python?")
 UNSAFE         - The command requests dangerous, destructive, or harmful operations (format drive, delete system32, mass file deletion without path, registry wipes, etc.)
 
@@ -806,6 +806,7 @@ def _build_react_step_prompt(
     step_index: int,
     max_steps: int,
     history: list = None,
+    warning_msg: str = "",
 ) -> str:
     """Build the prompt for a single ReAct step.
 
@@ -829,10 +830,18 @@ def _build_react_step_prompt(
     if steps_done:
         done_str = "STEPS COMPLETED SO FAR:\n"
         for i, s in enumerate(steps_done, 1):
-            done_str += f"  Step {i}: Action={s.get('action')} → Result: {s.get('result', '')}\n"
+            action_dict = s.get("action_dict")
+            if action_dict:
+                # Format parameters neatly
+                params = [f'"{k}": {json.dumps(v)}' for k, v in action_dict.items() if k != 'action']
+                params_str = f" with params {{{', '.join(params)}}}" if params else ""
+                done_str += f"  Step {i}: Action={action_dict.get('action')}{params_str} → Result: {s.get('result', '')}\n"
+            else:
+                done_str += f"  Step {i}: Action={s.get('action')} → Result: {s.get('result', '')}\n"
         done_str += "\n"
 
     remaining = max_steps - step_index
+    warning_line = f"\n{warning_msg}\n" if warning_msg else ""
     history_str = ""
     if history:
         history_str = "SESSION CONTEXT:\n" + "\n".join(history[-4:]) + "\n\n"
@@ -841,7 +850,7 @@ def _build_react_step_prompt(
     return f"""You are {_agent_name}, a Windows automation agent executing a multi-step plan.
 
 ORIGINAL USER GOAL: "{original_goal}"
-CURRENT STEP: {step_index + 1} of up to {max_steps} (steps remaining budget: {remaining})
+CURRENT STEP: {step_index + 1} of up to {max_steps} (steps remaining budget: {remaining}){warning_line}
 
 {history_str}{done_str}ENVIRONMENT:
 - OS: Windows, Screen: {screen_w}×{screen_h}
@@ -883,6 +892,21 @@ AVAILABLE ACTIONS (same as normal agent):
 RESPOND WITH ONLY THE JSON OBJECT."""
 
 
+def _is_result_failure(result: str) -> bool:
+    """Return True if the execution result indicates a failure."""
+    res_lower = result.lower()
+    return (
+        res_lower.startswith("error:") 
+        or "command failed" in res_lower
+        or "powershell command failed" in res_lower
+        or "syntax of the command is incorrect" in res_lower
+        or res_lower.startswith("failed to")
+        or "not found" in res_lower
+        or "unknown action:" in res_lower
+        or "aborted" in res_lower
+    )
+
+
 def run_react_loop(
     goal: str,
     steps_hint: list[str] = None,
@@ -914,6 +938,12 @@ def run_react_loop(
     completed = False
     aborted = False
 
+    # Track consecutive identical failing actions
+    consecutive_identical_failures = 0
+    last_action_dict = None
+    last_action_failed = False
+    warning_msg = ""
+
     print(f"  [ReAct] Starting loop for goal: {goal!r} (max_steps={max_steps})")
     if steps_hint:
         print(f"  [ReAct] Planner hints: {steps_hint}")
@@ -933,6 +963,7 @@ def run_react_loop(
             step_index=step_index,
             max_steps=max_steps,
             history=history,
+            warning_msg=warning_msg,
         )
 
         # Ask LLM for next action
@@ -974,9 +1005,37 @@ def run_react_loop(
                 step_callback(step_index, action_dict, summary)
             break
 
+        # Check consecutive identical failures before executing
+        if last_action_dict and action_dict == last_action_dict and last_action_failed:
+            consecutive_identical_failures += 1
+        else:
+            consecutive_identical_failures = 1 if last_action_failed else 0
+
+        if consecutive_identical_failures >= 3:
+            print(f"  [ReAct] Detected infinite loop: action repeated {consecutive_identical_failures} times. Aborting.")
+            aborted = True
+            summary = f"Aborted: Detected infinite loop of identical failing actions. Action: {action_dict}"
+            break
+
         # Execute the action
-        result_str = execute(action_dict, goal)
+        result_str = execute(action_dict, goal, record_in_history=False)
         print(f"  [ReAct] Step {step_index + 1} result: {result_str[:200]}")
+
+        # Check if result is a failure and update loop protection states
+        last_action_dict = action_dict
+        last_action_failed = _is_result_failure(result_str)
+
+        if last_action_failed:
+            if consecutive_identical_failures == 0:
+                consecutive_identical_failures = 1
+            warning_msg = (
+                f"\n⚠️ WARNING: The previous action failed with result: {result_str.strip()}\n"
+                "Do NOT execute the same command with the same parameters. Try a different approach, "
+                "correct the parameters/path syntax, or use a different tool (like run_powershell)."
+            )
+        else:
+            consecutive_identical_failures = 0
+            warning_msg = ""
 
         # Record this step
         step_record = {
@@ -997,8 +1056,8 @@ def run_react_loop(
             completed = True
             break
 
-        # Guard: if result is an error on the very first step, abort early
-        if step_index == 0 and result_str.lower().startswith("error:"):
+        # Guard: if result is an error on the very first step, abort early (except for shell commands which we want to allow retry/correction for)
+        if step_index == 0 and result_str.lower().startswith("error:") and action_name not in ("run_command", "run_powershell"):
             summary = f"Aborted early: {result_str}"
             aborted = True
             break
@@ -1093,6 +1152,42 @@ def _safe_coords(action: dict, xk="x", yk="y", default_x=500, default_y=300):
     return x, y
 
 
+def _normalize_windows_command(cmd: str) -> str:
+    """Normalize forward slashes to backslashes in Windows command paths while preserving switches and URLs."""
+    import shlex
+    try:
+        # Use posix=False to preserve backslashes on Windows
+        tokens = shlex.split(cmd, posix=False)
+    except Exception:
+        tokens = cmd.split()
+
+    normalized_tokens = []
+    for token in tokens:
+        # Preserve URLs
+        if "://" in token:
+            normalized_tokens.append(token)
+            continue
+
+        # Check if it's a typical cmd switch (starts with /, has no other /, and rest is alphanumeric/hash/etc.)
+        is_cmd_switch = (
+            token.startswith("/") 
+            and token.count("/") == 1 
+            and all(c.isalnum() or c in ("?", "-", "*") for c in token[1:])
+        )
+
+        if "/" in token and not is_cmd_switch:
+            # Replace forward slashes with backslashes
+            is_quoted = (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'"))
+            inner = token[1:-1] if is_quoted else token
+            inner_normalized = inner.replace("/", "\\")
+            token = f'"{inner_normalized}"' if is_quoted else inner_normalized
+
+        normalized_tokens.append(token)
+
+    return " ".join(normalized_tokens)
+
+
+
 # ── Subprocess Tracking Patch for Emergency Stop ──────────────────────────────
 import subprocess
 _orig_popen = subprocess.Popen
@@ -1120,7 +1215,7 @@ class TrackedPopen(_orig_popen):
 subprocess.Popen = TrackedPopen
 
 
-def execute(action: dict, command: str = "") -> str:
+def execute(action: dict, command: str = "", record_in_history: bool = True) -> str:
     """
     Wrapper for action execution. Integrates dangerous action blocklists,
     sandbox dry-runs, SQLite interaction logging, and daily log files.
@@ -1152,7 +1247,7 @@ def execute(action: dict, command: str = "") -> str:
         return dry_run_msg
         
     # 3. Record interaction in persistent SQLite memory
-    if command:
+    if command and record_in_history:
         try:
             memory.record_interaction(command, action)
         except Exception:
@@ -1591,13 +1686,17 @@ def _execute_core(action: dict) -> str:
             return f"Failed to disconnect Wi-Fi: {result.stderr.strip()}"
 
         elif a == "run_command":
+            normalized_cmd = _normalize_windows_command(str(v))
+            log.info("Running command normalized: %s", normalized_cmd)
             result = subprocess.run(
-                str(v), shell=True, capture_output=True,
+                normalized_cmd, shell=True, capture_output=True,
                 text=True, timeout=30, encoding="utf-8", errors="replace"
             )
             out = (result.stdout + result.stderr).strip()
+            if result.returncode != 0:
+                return f"Error: Command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
             if not out:
-                out = f"Command executed successfully (exit code {result.returncode})" if result.returncode == 0 else f"Command failed with exit code {result.returncode}"
+                out = "Command executed successfully (exit code 0)"
             return f"Command output:\n{out[:2000]}"
 
         elif a == "run_powershell":
@@ -1607,8 +1706,10 @@ def _execute_core(action: dict) -> str:
                 encoding="utf-8", errors="replace"
             )
             out = (result.stdout + result.stderr).strip()
+            if result.returncode != 0:
+                return f"Error: PowerShell command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
             if not out:
-                out = f"PowerShell command executed successfully (exit code {result.returncode})" if result.returncode == 0 else f"PowerShell command failed with exit code {result.returncode}"
+                out = "PowerShell command executed successfully (exit code 0)"
             return f"PowerShell output:\n{out[:2000]}"
 
         elif a == "get_system_info":
@@ -1853,6 +1954,19 @@ except Exception:
 
 def speak(text: str):
     print(f"  [AGENT] {text}")
+    # Use win32com SpVoice directly (very thread-safe with CoInitialize on Windows)
+    try:
+        import win32com.client
+        import pythoncom
+        pythoncom.CoInitialize()
+        voice = win32com.client.Dispatch("SAPI.SpVoice")
+        # Rate is speed (-10 to 10). pyttsx3 rate 175 is slightly faster than default.
+        voice.Rate = 1
+        voice.Speak(text)
+        return
+    except Exception as e:
+        log.debug("win32com SpVoice speak failed: %s", e)
+
     if tts_engine:
         try:
             tts_engine.say(text)
@@ -1973,6 +2087,57 @@ def run_test_batch(filepath: str):
         print(f"[{i}/{len(prompts)}] Testing: {command}")
         global_memory.add_user(command)
         try:
+            # 1. Classify intent
+            intent_result = classify_intent(command, global_memory.get_history())
+            intent_label = intent_result.get("intent", "SINGLE_ACTION")
+            intent_hints = intent_result.get("steps_hint", [])
+            print(f"  [Intent] {intent_label}")
+            
+            if intent_label == "UNSAFE":
+                print(f"  ↳ Blocked: Unsafe command detected.")
+                failed += 1
+                continue
+                
+            if intent_label == "QUESTION":
+                # Conversational
+                reply_text = conversational_reply(command, global_memory.get_history())
+                action = {"action": "reply", "value": reply_text}
+                global_memory.add_agent(action)
+                print(f"  ↳ Agent: {reply_text}")
+                passed += 1
+                continue
+                
+            if intent_label == "MULTI_STEP":
+                print(f"  [ReAct] Executing multi-step goal...")
+                try:
+                    memory.record_interaction(command, {"action": "multi_step", "value": command, "steps_hint": intent_hints})
+                except Exception:
+                    pass
+                react_res = run_react_loop(
+                    goal=command,
+                    steps_hint=intent_hints,
+                    max_steps=10,
+                    history=global_memory.get_history(),
+                )
+                summary_action = {"action": "react_complete", "value": react_res["summary"]}
+                global_memory.add_agent(summary_action)
+                
+                # Log completion
+                with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as _f:
+                    _f.write(json.dumps({
+                        "command": command,
+                        "action_taken": {"action": "multi_step", "value": command, "steps_hint": intent_hints},
+                        "correct": react_res["completed"] and not react_res["aborted"],
+                        "correct_action": None
+                    }) + "\n")
+                
+                if react_res["completed"] and not react_res["aborted"]:
+                    passed += 1
+                else:
+                    failed += 1
+                continue
+
+            # SINGLE_ACTION
             action = ask_llm(command, global_memory.get_history())
             if action:
                 global_memory.add_agent(action)
@@ -2078,6 +2243,50 @@ def main():
                 continue
 
             global_memory.add_user(command)
+
+            # 1. Classify intent
+            intent_result = classify_intent(command, global_memory.get_history())
+            intent_label = intent_result.get("intent", "SINGLE_ACTION")
+            intent_hints = intent_result.get("steps_hint", [])
+
+            if intent_label == "UNSAFE":
+                speak(f"Command blocked: {intent_result.get('reason', '')}")
+                continue
+
+            if intent_label == "QUESTION":
+                reply_text = conversational_reply(command, global_memory.get_history())
+                action = {"action": "reply", "value": reply_text}
+                global_memory.add_agent(action)
+                print(f"  ↳ Agent: {reply_text}")
+                continue
+
+            if intent_label == "MULTI_STEP":
+                print(f"  [ReAct] Starting multi-step execution...")
+                try:
+                    memory.record_interaction(command, {"action": "multi_step", "value": command, "steps_hint": intent_hints})
+                except Exception:
+                    pass
+                react_res = run_react_loop(
+                    goal=command,
+                    steps_hint=intent_hints,
+                    max_steps=10,
+                    history=global_memory.get_history(),
+                )
+                summary_action = {"action": "react_complete", "value": react_res["summary"]}
+                global_memory.add_agent(summary_action)
+                print(f"  ↳ {react_res['summary']}")
+
+                # Write to execution log
+                with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as _f:
+                    _f.write(json.dumps({
+                        "command": command,
+                        "action_taken": {"action": "multi_step", "value": command, "steps_hint": intent_hints},
+                        "correct": react_res["completed"] and not react_res["aborted"],
+                        "correct_action": None
+                    }) + "\n")
+                continue
+
+            # SINGLE_ACTION
             action = ask_llm(command, global_memory.get_history())
             if action:
                 global_memory.add_agent(action)

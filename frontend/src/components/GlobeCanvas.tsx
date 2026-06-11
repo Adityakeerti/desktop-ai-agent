@@ -8,7 +8,7 @@ interface GlobeProps {
 export default function GlobeCanvas({ onReady }: GlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const mouseRef = useRef({ x: 0, y: 0, targetX: 0, targetY: 0 });
+  const mouseRef = useRef({ x: 0, y: 0, targetX: 0, targetY: 0, isInside: false });
 
   // Dynamically generate a premium soft-glow point texture
   const createPointGlowTexture = (colorHex: string) => {
@@ -256,9 +256,17 @@ export default function GlobeCanvas({ onReady }: GlobeProps) {
       const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       mouseRef.current.targetX = x * 0.4;
       mouseRef.current.targetY = y * 0.4;
+      mouseRef.current.isInside = true;
+    };
+
+    const handleMouseLeave = () => {
+      mouseRef.current.targetX = 0;
+      mouseRef.current.targetY = 0;
+      mouseRef.current.isInside = false;
     };
 
     container.addEventListener('mousemove', handleMouseMove);
+    container.addEventListener('mouseleave', handleMouseLeave);
 
     // --- Animation Loop ---
     let animationFrameId = 0;
@@ -308,9 +316,10 @@ export default function GlobeCanvas({ onReady }: GlobeProps) {
       // Update lines periodically or each frame (computationally cheap for 40 lines)
       updateConnections();
 
-      // Mouse Parallax Lerp
-      mouseRef.current.x += (mouseRef.current.targetX - mouseRef.current.x) * 0.06;
-      mouseRef.current.y += (mouseRef.current.targetY - mouseRef.current.y) * 0.06;
+      // Mouse Parallax Lerp - slower reset speed when mouse leaves the container
+      const lerpFactor = mouseRef.current.isInside ? 0.06 : 0.015;
+      mouseRef.current.x += (mouseRef.current.targetX - mouseRef.current.x) * lerpFactor;
+      mouseRef.current.y += (mouseRef.current.targetY - mouseRef.current.y) * lerpFactor;
 
       mainGroup.position.x = mouseRef.current.x;
       mainGroup.position.y = mouseRef.current.y;
@@ -339,6 +348,7 @@ export default function GlobeCanvas({ onReady }: GlobeProps) {
     return () => {
       cancelAnimationFrame(animationFrameId);
       container.removeEventListener('mousemove', handleMouseMove);
+      container.removeEventListener('mouseleave', handleMouseLeave);
       resizeObserver.disconnect();
       renderer.dispose();
       outerGeo.dispose();
