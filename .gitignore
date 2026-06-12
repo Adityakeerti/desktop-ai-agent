@@ -40,7 +40,7 @@ frontend/.vite/
 # ── OS files ──────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
-
+rage_launch/
 # ── Screenshots saved by the agent ───────────────────────────────────────────
 *.png
 *.jpg
