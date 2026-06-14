@@ -214,6 +214,9 @@ def download_page_images(url: str, output_dir: str = None) -> list[str]:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            page.set_extra_http_headers({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
             page.goto(url, timeout=30000, wait_until="domcontentloaded")
             
             images = page.query_selector_all("img")
@@ -235,7 +238,10 @@ def download_page_images(url: str, output_dir: str = None) -> list[str]:
                         filename = f"image_{i}_{int(time.time())}.jpg"
                         
                     save_path = os.path.join(output_dir, filename)
-                    resp = requests.get(img_url, timeout=10)
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    }
+                    resp = requests.get(img_url, headers=headers, timeout=10)
                     resp.raise_for_status()
                     with open(save_path, "wb") as f:
                         f.write(resp.content)

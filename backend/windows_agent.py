@@ -24,8 +24,8 @@ import logging
 import threading
 import subprocess
 import requests
-import pyautogui
 import pygetwindow as gw
+import backend.memory as memory
 import speech_recognition as sr
 import pyttsx3
 import sounddevice as sd
@@ -449,7 +449,7 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"create_folder","path":"MyFolder"}}                    - create directory
 {{"action":"delete_folder","path":"MyFolder"}}                    - delete directory tree
 {{"action":"list_files","path":"~/Desktop"}}                      - list files in directory
-{{"action":"smart_file_search","query":"notes","ext":".md","days":7}} - recursively search files, or get recent files, or list/restore Recycle Bin
+{{"action":"smart_file_search","query":"notes","ext":".md","days":7,"path":"C:/...","min_size":"1MB","max_size":"10MB"}} - recursively search files with filters (ignores node_modules/venv for speed), get recent files, or list/restore Recycle Bin
 {{"action":"zip_files","files":["a.txt","b.txt"],"output":"out.zip"}} - compress files
 {{"action":"unzip_files","archive":"archive.zip","output":"extracted_folder"}} - decompress archive
 {{"action":"download_file","url":"https://...","path":"file.zip"}} - download a file
@@ -460,7 +460,7 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"http_request","url":"http://...","method":"GET"}} - send HTTP requests
 {{"action":"scrape_web_page","url":"http://...","selector":".price"}} - scrape web page content
 {{"action":"download_page_images","url":"http://...","output":"downloads"}} - download images from web page
-{{"action":"fill_web_form","url":"http://...","actions":[{"selector":"#name","action":"fill","value":"text"}]}} - autofill forms
+{{"action":"fill_web_form","url":"http://...","actions":[{{"selector":"#name","action":"fill","value":"text"}}]}} - autofill forms
 {{"action":"store_credential","service":"github","username":"user","password":"pw"}} - encrypt & store credential
 {{"action":"get_credential","service":"github"}} - retrieve stored credential
 {{"action":"delete_credential","service":"github","username":"user"}} - delete stored credential
@@ -756,7 +756,7 @@ def _build_conversational_prompt(user_message: str, history: list = None) -> str
 
     history_str = ""
     if history:
-        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-6:]) + "\n\n"
+        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-12:]) + "\n\n"
 
     return f"""You are {agent_name}, an intelligent, conversational Windows automation assistant.
 {tone_text}
@@ -832,7 +832,7 @@ INTENT_LABELS = ("SINGLE_ACTION", "MULTI_STEP", "QUESTION", "UNSAFE", "AMBIGUOUS
 def _build_intent_prompt(command: str, history: list = None) -> str:
     history_str = ""
     if history:
-        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-4:]) + "\n\n"
+        history_str = "RECENT CONTEXT:\n" + "\n".join(history[-12:]) + "\n\n"
 
     return f"""You are an intent classifier for a Windows automation agent.
 Classify the user's command into exactly ONE of these labels:
@@ -943,7 +943,7 @@ def _build_react_step_prompt(
     warning_line = f"\n{warning_msg}\n" if warning_msg else ""
     history_str = ""
     if history:
-        history_str = "SESSION CONTEXT:\n" + "\n".join(history[-4:]) + "\n\n"
+        history_str = "SESSION CONTEXT:\n" + "\n".join(history[-12:]) + "\n\n"
 
     # Reuse the full action catalogue from build_prompt but abbreviated here
     return f"""You are {_agent_name}, a Windows automation agent executing a multi-step plan.
@@ -986,7 +986,7 @@ AVAILABLE ACTIONS (same as normal agent):
 {{"action":"read_file","path":"..."}}
 {{"action":"create_file","path":"...","content":"..."}}
 {{"action":"list_files","path":"..."}}
-{{"action":"smart_file_search","query":"...","ext":".pdf","days":7}}
+{{"action":"smart_file_search","query":"...","ext":".pdf","days":7,"path":"C:/...","min_size":"1MB","max_size":"10MB"}}
 {{"action":"zip_files","files":["..."],"output":"..."}}
 {{"action":"unzip_files","archive":"...","output":"..."}}
 {{"action":"run_code_snippet","code":"...","language":"..."}}
@@ -1168,10 +1168,20 @@ def run_react_loop(
         if last_action_failed:
             if consecutive_identical_failures == 0:
                 consecutive_identical_failures = 1
+            
+            err_lower = result_str.lower()
+            timeout_tip = ""
+            if "timeout" in err_lower or "timed out" in err_lower:
+                timeout_tip = (
+                    " The action timed out (30s limit). "
+                    "If you were searching files or directories recursively, use 'smart_file_search' (with parameters like path, query, ext, min_size, max_size, days) instead of run_powershell or run_command because it is highly optimized and automatically ignores node_modules, .git, and .venv. "
+                    "Alternatively, write a short, targeted python script and run it using 'run_code_snippet'."
+                )
+            
             warning_msg = (
-                f"\n⚠️ WARNING: The previous action failed with result: {result_str.strip()}\n"
-                "Do NOT execute the same command with the same parameters. Try a different approach, "
-                "correct the parameters/path syntax, or use a different tool (like run_powershell)."
+                f"\n⚠️ WARNING: The previous action '{action_name}' failed or timed out with result:\n{result_str.strip()}\n"
+                f"Do NOT execute the same command with the same parameters again. Try a different approach.{timeout_tip}\n"
+                "Verify path and parameter syntax, use alternative tools, or write a custom script using 'run_code_snippet'."
             )
         else:
             consecutive_identical_failures = 0
@@ -1536,7 +1546,7 @@ def execute(action: dict, command: str = "", record_in_history: bool = True) -> 
         pass
             
     # Run actual action
-    result = _execute_core(action)
+    result = _execute_core(action, command=command)
     
     # Record successful action into ledger (Phase 2 Task 2.1)
     if not result.startswith("Error"):
@@ -1639,11 +1649,12 @@ def _pomodoro_timer_loop(duration_seconds: int, label: str):
     POMODORO_THREAD = None
 
 
-def _execute_core(action: dict) -> str:
+def _execute_core(action: dict, command: str = "") -> str:
     """
     Execute an action dict and return a human-readable result string.
     Raises no exceptions — all errors are caught and returned as strings.
     """
+    import time
     try:
         global POMODORO_THREAD, POMODORO_CANCELLED
         a = action.get("action", "")
@@ -2246,7 +2257,6 @@ def _execute_core(action: dict) -> str:
                 return "Error: Missing URL for HTTP request."
                 
             try:
-                import requests
                 import json
                 resp = requests.request(
                     method=method,
@@ -2511,7 +2521,7 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
                 if not summary or summary.strip().startswith("I'm here."):
                     raise Exception("Conversational reply returned fallback.")
                 return summary
-            except Exception as e:
+            except Exception:
                 return f"""JARVIS Daily Briefing Compiler (Offline Fallback):
 - Weather: {weather_desc}
 - Calendar: {events_desc}
@@ -2542,29 +2552,35 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
         elif a == "run_command":
             normalized_cmd = _normalize_windows_command(str(v))
             log.info("Running command normalized: %s", normalized_cmd)
-            result = subprocess.run(
-                normalized_cmd, shell=True, capture_output=True,
-                text=True, timeout=30, encoding="utf-8", errors="replace"
-            )
-            out = (result.stdout + result.stderr).strip()
-            if result.returncode != 0:
-                return f"Error: Command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
-            if not out:
-                out = "Command executed successfully (exit code 0)"
-            return f"Command output:\n{out[:2000]}"
+            try:
+                result = subprocess.run(
+                    normalized_cmd, shell=True, capture_output=True,
+                    text=True, timeout=30, encoding="utf-8", errors="replace"
+                )
+                out = (result.stdout + result.stderr).strip()
+                if result.returncode != 0:
+                    return f"Error: Command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
+                if not out:
+                    out = "Command executed successfully (exit code 0)"
+                return f"Command output:\n{out[:2000]}"
+            except subprocess.TimeoutExpired:
+                return "Error: Command execution timed out (30s limit)."
 
         elif a == "run_powershell":
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", str(v)],
-                capture_output=True, text=True, timeout=30,
-                encoding="utf-8", errors="replace"
-            )
-            out = (result.stdout + result.stderr).strip()
-            if result.returncode != 0:
-                return f"Error: PowerShell command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
-            if not out:
-                out = "PowerShell command executed successfully (exit code 0)"
-            return f"PowerShell output:\n{out[:2000]}"
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", str(v)],
+                    capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace"
+                )
+                out = (result.stdout + result.stderr).strip()
+                if result.returncode != 0:
+                    return f"Error: PowerShell command failed with exit code {result.returncode}. Output:\n{out[:2000]}"
+                if not out:
+                    out = "PowerShell command executed successfully (exit code 0)"
+                return f"PowerShell output:\n{out[:2000]}"
+            except subprocess.TimeoutExpired:
+                return "Error: PowerShell command timed out (30s limit)."
 
         elif a == "get_system_info":
             try:
@@ -2944,15 +2960,53 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
                 items = file_search.get_recycle_bin_items()
                 if not items:
                     return "Recycle Bin is empty."
-                lines = [f"  • {item['name']} ({item['type']}) - {item['path']}" for item in items]
-                return "Recycle Bin Items:\n" + "\n".join(lines)
+                max_display = 5
+                lines = []
+                for item in items[:max_display]:
+                    home = os.path.expanduser("~").replace("\\", "/")
+                    display_path = item["path"].replace(home, "~")
+                    lines.append(f"  • {item['name']} ({item['type']}) - {display_path}")
+                summary = "Recycle Bin Items:\n" + "\n".join(lines)
+                if len(items) > max_display:
+                    summary += f"\n  • ... and {len(items) - max_display} more items."
+                return summary
 
             if recent or (query == "recent" and not ext):
                 items = file_search.get_recent_files()
                 if not items:
                     return "No recent files found."
-                lines = [f"  • {item['name']} (Accessed: {item['accessed_at']}) - {item['path']}" for item in items]
-                return "Recent Files:\n" + "\n".join(lines)
+                max_display = 5
+                lines = []
+                for item in items[:max_display]:
+                    try:
+                        mtime = os.path.getmtime(item["path"])
+                        diff = time.time() - mtime
+                        if diff < 0:
+                            time_str = "Just now"
+                        else:
+                            days_diff = int(diff / 86400)
+                            if days_diff == 0:
+                                hours_diff = int(diff / 3600)
+                                if hours_diff == 0:
+                                    mins_diff = int(diff / 60)
+                                    time_str = "Just now" if mins_diff == 0 else f"{mins_diff}m ago"
+                                else:
+                                    time_str = f"{hours_diff}h ago"
+                            elif days_diff == 1:
+                                time_str = "Yesterday"
+                            elif days_diff < 7:
+                                time_str = f"{days_diff} days ago"
+                            else:
+                                time_str = time.strftime("%b %d", time.localtime(mtime))
+                    except Exception:
+                        time_str = item["accessed_at"]
+                    home = os.path.expanduser("~").replace("\\", "/")
+                    display_path = item["path"].replace(home, "~")
+                    lines.append(f"  • {item['name']} (Accessed {time_str}) - {display_path}")
+                summary = "Recent Files:\n" + "\n".join(lines)
+                if len(items) > max_display:
+                    summary += f"\n  • ... and {len(items) - max_display} more files."
+                return summary
 
             start_dir = action.get("path", action.get("directory", ""))
             if not start_dir:
@@ -2982,12 +3036,46 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
                 desc = ", ".join(filters_desc)
                 return f"No files matching search criteria ({desc}) found in '{start_dir}'."
                 
+            max_display = 5
             lines = []
-            for item in results:
+            for item in results[:max_display]:
                 size_mb = round(item["size_bytes"] / (1024 * 1024), 2)
-                lines.append(f"  • {item['name']} ({size_mb} MB, Modified: {item['modified_at']}) - {item['path']}")
+                if size_mb < 0.1:
+                    size_str = f"{round(item['size_bytes'] / 1024, 1)} KB"
+                else:
+                    size_str = f"{size_mb} MB"
+                try:
+                    rel_path = os.path.relpath(item["path"], start_dir).replace("\\", "/")
+                except Exception:
+                    rel_path = item["path"]
+                try:
+                    mtime = os.path.getmtime(item["path"])
+                    diff = time.time() - mtime
+                    if diff < 0:
+                        time_str = "Just now"
+                    else:
+                        days_diff = int(diff / 86400)
+                        if days_diff == 0:
+                            hours_diff = int(diff / 3600)
+                            if hours_diff == 0:
+                                mins_diff = int(diff / 60)
+                                time_str = "Just now" if mins_diff == 0 else f"{mins_diff}m ago"
+                            else:
+                                time_str = f"{hours_diff}h ago"
+                        elif days_diff == 1:
+                            time_str = "Yesterday"
+                        elif days_diff < 7:
+                            time_str = f"{days_diff} days ago"
+                        else:
+                            time_str = time.strftime("%b %d", time.localtime(mtime))
+                except Exception:
+                    time_str = item["modified_at"]
+                lines.append(f"  • {rel_path} ({size_str}, {time_str})")
                 
-            return f"Found {len(results)} matching files in '{start_dir}':\n" + "\n".join(lines)
+            summary = f"Found {len(results)} matching files in '{start_dir}':\n" + "\n".join(lines)
+            if len(results) > max_display:
+                summary += f"\n  • ... and {len(results) - max_display} more files."
+            return summary
 
         elif a == "power_command":
             type_val = action.get("type", "").lower()
@@ -3045,6 +3133,8 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
 
         elif a == "set_volume":
             level = max(0, min(int(v), 100))
+            e1 = None
+            e2 = None
 
             # ── Layer 1: pycaw (unwrap AudioDevice wrapper if needed) ─────────
             try:
@@ -3058,8 +3148,9 @@ Keep the summary structured, professional yet warm, and highlight any urgent mee
                 vol_ctrl  = cast(interface, POINTER(IAudioEndpointVolume))
                 vol_ctrl.SetMasterVolumeLevelScalar(level / 100.0, None)
                 return f"Volume set to {level}%"
-            except Exception as e1:
-                log.debug("pycaw set_volume failed (%s), trying WinMM PowerShell", e1)
+            except Exception as err:
+                e1 = err
+                log.debug("pycaw set_volume failed (%s), trying WinMM PowerShell", err)
 
             # ── Layer 2: WinMM via PowerShell P/Invoke (no extra deps) ────────
             try:
@@ -3078,8 +3169,9 @@ Add-Type -MemberDefinition $code -Name WinMM -Namespace WinAPI -ErrorAction Stop
                 if r.returncode == 0:
                     return f"Volume set to {level}% (WinMM)"
                 log.debug("WinMM PS failed: %s", r.stderr.strip())
-            except Exception as e2:
-                log.debug("WinMM set_volume failed (%s), trying key-press fallback", e2)
+            except Exception as err:
+                e2 = err
+                log.debug("WinMM set_volume failed (%s), trying key-press fallback", err)
 
             # ── Layer 3: pyautogui volume key-press approximation ──────────────
             try:
@@ -3690,7 +3782,7 @@ def main():
                                 break
                         with open(MISSING_TOOLS_PATH, "w", encoding="utf-8") as _f:
                             __import__("json").dump(_logs, _f, indent=2)
-                    except Exception as e:
+                    except Exception:
                         pass
             else:
                 speak("Sorry, all AI providers are down right now.")

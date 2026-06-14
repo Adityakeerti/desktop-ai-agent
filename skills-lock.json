@@ -13,6 +13,12 @@
       "skillPath": "skills/executing-plans/SKILL.md",
       "computedHash": "b41c919caf1bb07fbacb0e29899ac513f9eb11cd4dd695975ad352c2c03cc4d7"
     },
+    "systematic-debugging": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/systematic-debugging/SKILL.md",
+      "computedHash": "7246fdd3a795fc3daff0af72044ca99bf836e4e6a46844742858786fdfb86488"
+    },
     "tailwind-4-docs": {
       "source": "lombiq/tailwind-agent-skills",
       "sourceType": "github",
