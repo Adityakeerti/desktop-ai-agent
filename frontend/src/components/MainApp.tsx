@@ -40,20 +40,56 @@ declare global {
         set_profile: (field: string, value: string) => Promise<string>;
         set_profile_batch: (profileJson: string) => Promise<string>;
         react_loop: (goal?: string, steps_hint_json?: string) => Promise<string>;
+        get_todos: () => Promise<string>;
+        add_todo: (task: string) => Promise<string>;
+        mark_todo_complete: (task_id_or_name: string) => Promise<string>;
+        delete_todo: (task_id_or_name: string) => Promise<string>;
+        start_pomodoro: (duration: number, label: string) => Promise<string>;
+        stop_pomodoro: () => Promise<string>;
+        get_open_windows?: () => Promise<string>;
+        get_monitor_layouts?: () => Promise<string>;
+        tile_windows?: (layout: string, apps_json: string) => Promise<string>;
+        manage_tabs?: (app_name: string, tab_action: string) => Promise<string>;
+        get_execution_ledger?: (limit?: number) => Promise<string>;
+        undo_last_action?: () => Promise<string>;
+        replay_ledger_action?: (action_id: number) => Promise<string>;
+        get_all_facts?: () => Promise<string>;
+        save_fact?: (fact: string) => Promise<string>;
+        delete_fact?: (fact: string) => Promise<string>;
+        get_battery_status_data?: () => Promise<string>;
+        get_resource_hogs_data?: () => Promise<string>;
+        get_startup_apps?: () => Promise<string>;
+        toggle_startup_app?: (name: string, enabled: boolean, path?: string) => Promise<string>;
+        get_clipboard_history_data?: (limit?: number) => Promise<string>;
+        delete_clipboard_item?: (text: string) => Promise<string>;
+        get_recent_files_data?: (limit?: number) => Promise<string>;
+        get_recycle_bin_data?: () => Promise<string>;
+        restore_recycle_bin_item?: (path: string) => Promise<string>;
+        search_files_data?: (start_dir: string, query?: string, ext?: string, days?: number, min_size?: string, max_size?: string) => Promise<string>;
+        zip_files?: (files_json: string, output_path: string) => Promise<string>;
+        unzip_files?: (archive_path: string, output_dir: string) => Promise<string>;
+        read_notes_file?: () => Promise<string>;
+        save_notes_file?: (content: string) => Promise<string>;
+        get_apps?: () => Promise<string>;
+        get_installed_apps?: () => Promise<string>;
+        add_app?: (label: string, icon: string, path_or_command: string) => Promise<string>;
+        delete_app?: (label: string) => Promise<string>;
+        launch_app?: (label: string, path_or_command: string) => Promise<string>;
       };
     };
     onClipboardNotification?: (payload: { text: string; type: 'url' | 'path' }) => void;
     onFileOrganized?: (payload: { filename: string; category: string; destination: string }) => void;
     onWindowsNotification?: (payload: { app: string; title: string; body: string }) => void;
+    onPomodoroUpdate?: (payload: { active: boolean; remaining: number; total: number; label: string; completed?: boolean; cancelled?: boolean }) => void;
     onSettingsChanged?: () => void;
     addMessageFromPython?: (role: any, text: string) => void;
   }
 }
 
 /* ─── Types ────────────────────────────────────────────────────────────────── */
-type Role = 'rage' | 'user' | 'result' | 'error' | 'action' | 'sys' | 'react_start' | 'react_plan' | 'react_step' | 'react_result' | 'react_done';
-interface Msg { id: number; role: Role; text: string; ts: string; command?: string; action_taken?: any; }
-type PanelId = 'uplink' | 'apps' | 'input' | 'file' | 'system' | 'comm';
+type Role = 'rage' | 'user' | 'result' | 'error' | 'action' | 'sys' | 'react_start' | 'react_plan' | 'react_step' | 'react_result' | 'react_done' | 'clarify';
+interface Msg { id: number; role: Role; text: string; ts: string; command?: string; action_taken?: any; options?: string[]; }
+type PanelId = 'uplink' | 'apps' | 'input' | 'file' | 'system' | 'comm' | 'todo';
 type ToneId =
   | 'professional'
   | 'sarcastic'
@@ -76,6 +112,9 @@ interface UserProfile {
   tone: ToneId;
   custom_tone_prompt: string;
   agent_name: string;
+  macro_recommendations_enabled?: string;
+  macro_min_freq?: string;
+  macro_timeout_sec?: string;
 }
 
 /* ─── Constants ────────────────────────────────────────────────────────────── */
@@ -86,6 +125,7 @@ const NAV_ITEMS: { id: PanelId; icon: string; label: string }[] = [
   { id: 'file', icon: 'folder_open', label: 'File Matrix' },
   { id: 'system', icon: 'terminal', label: 'System CLI' },
   { id: 'comm', icon: 'travel_explore', label: 'Comms & Web' },
+  { id: 'todo', icon: 'playlist_add_check', label: 'Todo List' },
 ];
 
 const QUICK_CHIPS: { label: string; icon: string; cmd: string }[] = [
@@ -99,21 +139,7 @@ const QUICK_CHIPS: { label: string; icon: string; cmd: string }[] = [
   { label: 'Task Mgr', icon: 'monitor_heart', cmd: 'open task manager' },
 ];
 
-/* ─── Panel action button groups ──────────────────────────────────────────── */
-const APP_ACTIONS = [
-  { label: 'Notepad', icon: 'edit_note', cmd: 'open notepad' },
-  { label: 'Calculator', icon: 'calculate', cmd: 'open calculator' },
-  { label: 'Explorer', icon: 'folder_open', cmd: 'open explorer' },
-  { label: 'Chrome', icon: 'language', cmd: 'open chrome' },
-  { label: 'Task Manager', icon: 'monitor_heart', cmd: 'open task manager' },
-  { label: 'VS Code', icon: 'code', cmd: 'open vs code' },
-  { label: 'Spotify', icon: 'music_note', cmd: 'open spotify' },
-  { label: 'Discord', icon: 'forum', cmd: 'open discord' },
-  { label: 'Paint', icon: 'palette', cmd: 'open paint' },
-  { label: 'PowerShell', icon: 'terminal', cmd: 'open powershell' },
-  { label: 'Brave', icon: 'security', cmd: 'open brave' },
-  { label: 'Edge', icon: 'edge', cmd: 'open edge' },
-];
+
 
 const HID_ACTIONS = [
   { label: 'Screenshot', icon: 'screenshot', cmd: 'take a screenshot and save it to my desktop' },
@@ -184,6 +210,14 @@ export default function MainApp() {
   const [reminderSeconds, setReminderSeconds] = useState(60);
   const [memoryHistory, setMemoryHistory] = useState<any[]>([]);
   const [memoryLog, setMemoryLog] = useState<any[]>([]);
+  const [todos, setTodos] = useState<any[]>([]);
+  const [newTodoText, setNewTodoText] = useState('');
+  const [pomodoro, setPomodoro] = useState<{ active: boolean; remaining: number; total: number; label: string }>({
+    active: false,
+    remaining: 0,
+    total: 0,
+    label: ''
+  });
 
   // Custom confirmation modal for deletes
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -197,12 +231,126 @@ export default function MainApp() {
   const [editMacroBusy, setEditMacroBusy] = useState(false);
   const [editMacroError, setEditMacroError] = useState('');
 
+  // Dynamic App Matrix states
+  interface AppItem {
+    id?: number;
+    label: string;
+    icon: string;
+    path_or_command: string;
+  }
+  const [apps, setApps] = useState<AppItem[]>([
+    { label: 'Notepad', icon: 'edit_note', path_or_command: 'notepad' },
+    { label: 'Calculator', icon: 'calculate', path_or_command: 'calculator' },
+    { label: 'Explorer', icon: 'folder_open', path_or_command: 'explorer' },
+    { label: 'Chrome', icon: 'language', path_or_command: 'chrome' },
+    { label: 'Task Manager', icon: 'monitor_heart', path_or_command: 'task manager' },
+    { label: 'VS Code', icon: 'code', path_or_command: 'vs code' },
+    { label: 'Spotify', icon: 'music_note', path_or_command: 'spotify' },
+    { label: 'Discord', icon: 'forum', path_or_command: 'discord' },
+    { label: 'Paint', icon: 'palette', path_or_command: 'paint' },
+    { label: 'PowerShell', icon: 'terminal', path_or_command: 'powershell' },
+    { label: 'Brave', icon: 'security', path_or_command: 'brave' },
+    { label: 'Edge', icon: 'edge', path_or_command: 'edge' },
+  ]);
+  const [showAddAppModal, setShowAddAppModal] = useState(false);
+  const [newAppLabel, setNewAppLabel] = useState('');
+  const [newAppPath, setNewAppPath] = useState('');
+  const [addAppError, setAddAppError] = useState('');
+  const [installedApps, setInstalledApps] = useState<{ name: string; path: string }[]>([]);
+  const [selectedInstalledApp, setSelectedInstalledApp] = useState('');
+  const [showCustomAppFallback, setShowCustomAppFallback] = useState(false);
+
   // Clipboard/file/notification Toasts
   const [toasts, setToasts] = useState<{ id: number; type: 'clipboard' | 'file' | 'notification'; title: string; body: string; actionCmd?: string }[]>([]);
+
+  // ── Phase 9: New State Variables ─────────────────────────────────────────
+  const [openWindows, setOpenWindows] = useState<any[]>([]);
+  const [monitorLayouts, setMonitorLayouts] = useState<any[]>([]);
+  const [selectedWindows, setSelectedWindows] = useState<string[]>([]); // window process names
+  const [tabAppName, setTabAppName] = useState('chrome');
+  const [executionLedger, setExecutionLedger] = useState<any[]>([]);
+  const [facts, setFacts] = useState<string[]>([]);
+  const [newFactText, setNewFactText] = useState('');
+  const [batteryStatus, setBatteryStatus] = useState<any>(null);
+  const [resourceHogs, setResourceHogs] = useState<{ cpu: any[]; memory: any[] }>({ cpu: [], memory: [] });
+  const [startupApps, setStartupApps] = useState<any[]>([]);
+  const [newStartupName, setNewStartupName] = useState('');
+  const [newStartupPath, setNewStartupPath] = useState('');
+  const [clipboardHistory, setClipboardHistory] = useState<any[]>([]);
+  const [clipSearchQuery, setClipSearchQuery] = useState('');
+  const [recentFiles, setRecentFiles] = useState<any[]>([]);
+  const [recycleBin, setRecycleBin] = useState<any[]>([]);
+  
+  // File search states
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
+  const [fileSearchExt, setFileSearchExt] = useState('');
+  const [fileSearchDays, setFileSearchDays] = useState('');
+  const [fileSearchMinSize, setFileSearchMinSize] = useState('');
+  const [fileSearchMaxSize, setFileSearchMaxSize] = useState('');
+  const [fileSearchStartDir, setFileSearchStartDir] = useState('E:/CODING');
+  const [fileSearchResults, setFileSearchResults] = useState<any[]>([]);
+  const [fileSearchBusy, setFileSearchBusy] = useState(false);
+
+  // Compress/extract states
+  const [compressFiles, setCompressFiles] = useState('');
+  const [compressOutput, setCompressOutput] = useState('');
+  const [decompressArchive, setDecompressArchive] = useState('');
+  const [decompressOutput, setDecompressOutput] = useState('');
+  const [notesText, setNotesText] = useState('');
+  const [notesSaving, setNotesSaving] = useState(false);
+
+  // Panel tab selections (moved to top level to prevent hooks violation)
+  const [todoTab, setTodoTab] = useState<'todo' | 'clipboard' | 'notes'>('todo');
+  const [sysTab, setSysTab] = useState<'control' | 'ledger'>('control');
+  const [fileTab, setFileTab] = useState<'actions' | 'search' | 'recent' | 'compress'>('actions');
+
+  const fetchPhaseNineData = useCallback(async () => {
+    if (!apiAvailable()) return;
+    
+    const safeFetch = async (apiFunc: any, setter: (val: any) => void, fallback: any) => {
+      try {
+        if (apiFunc) {
+          const res = await apiFunc();
+          setter(JSON.parse(res) || fallback);
+        }
+      } catch (e) {
+        console.error(`Error in safeFetch:`, e);
+        setter(fallback);
+      }
+    };
+
+    await Promise.all([
+      safeFetch(window.pywebview!.api.get_open_windows, setOpenWindows, []),
+      safeFetch(window.pywebview!.api.get_monitor_layouts, setMonitorLayouts, []),
+      safeFetch(window.pywebview!.api.get_execution_ledger, setExecutionLedger, []),
+      safeFetch(window.pywebview!.api.get_all_facts, setFacts, []),
+      safeFetch(window.pywebview!.api.get_battery_status_data, setBatteryStatus, null),
+      safeFetch(window.pywebview!.api.get_resource_hogs_data, setResourceHogs, { cpu: [], memory: [] }),
+      safeFetch(window.pywebview!.api.get_startup_apps, setStartupApps, []),
+      safeFetch(window.pywebview!.api.get_clipboard_history_data, setClipboardHistory, []),
+      safeFetch(window.pywebview!.api.get_recent_files_data, setRecentFiles, []),
+      safeFetch(window.pywebview!.api.get_recycle_bin_data, setRecycleBin, []),
+      safeFetch(window.pywebview!.api.get_apps, setApps, []),
+      safeFetch(window.pywebview!.api.get_installed_apps, setInstalledApps, []),
+      (async () => {
+        try {
+          if (window.pywebview!.api.read_notes_file) {
+            const nStr = await window.pywebview!.api.read_notes_file();
+            setNotesText(nStr || '');
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      })()
+    ]);
+  }, []);
 
   // ── Personalization Profile ─────────────────────────────────────────────
   const defaultProfile: UserProfile = {
     name: '', role: '', interests: '', tone: 'professional', custom_tone_prompt: '', agent_name: 'JARVIS',
+    macro_recommendations_enabled: 'true',
+    macro_min_freq: '3',
+    macro_timeout_sec: '180',
   };
   const [profile, setProfile] = useState<UserProfile>(defaultProfile);
   const [profileDraft, setProfileDraft] = useState<UserProfile>(defaultProfile);
@@ -246,8 +394,8 @@ export default function MainApp() {
   }, []);
 
   /* ── Add message ──────────────────────────────────────────────────────── */
-  const addMsg = useCallback((role: Role, text: string, command?: string, action_taken?: any) => {
-    setMsgs(prev => [...prev, { id: ++msgCounter.current, role, text, ts: ts(), command, action_taken }]);
+  const addMsg = useCallback((role: Role, text: string, command?: string, action_taken?: any, options?: string[]) => {
+    setMsgs(prev => [...prev, { id: ++msgCounter.current, role, text, ts: ts(), command, action_taken, options }]);
   }, []);
 
   const fetchSettings = useCallback(async () => {
@@ -274,6 +422,18 @@ export default function MainApp() {
         setProfileDraft(p);
       } catch (e) {
         console.error('Error fetching profile:', e);
+      }
+    }
+  }, []);
+
+  const fetchTodos = useCallback(async () => {
+    if (apiAvailable() && window.pywebview?.api?.get_todos) {
+      try {
+        const todosStr = await window.pywebview.api.get_todos();
+        setTodos(JSON.parse(todosStr) || []);
+      } catch (e) {
+        console.error("Error fetching todos:", e);
+        setTodos([]);
       }
     }
   }, []);
@@ -305,7 +465,7 @@ export default function MainApp() {
     addMsg('rage', greeting);
     addMsg('sys', 'Connected to pywebview API — full execution mode active.');
 
-    // Load providers
+     // Load providers
     if (apiAvailable()) {
       window.pywebview!.api.get_providers().then(p => {
         setProviders(p);
@@ -315,14 +475,43 @@ export default function MainApp() {
       }).catch(() => { });
       fetchSettings();
       fetchProfile();
+      fetchTodos();
+      fetchPhaseNineData();
     }
-  }, [fetchSettings, fetchProfile]);
+  }, [fetchSettings, fetchProfile, fetchTodos, fetchPhaseNineData]);
+
+  // Trigger Phase 9 fetch when navigating
+  useEffect(() => {
+    fetchPhaseNineData();
+  }, [activeNav, fetchPhaseNineData]);
+
+  // Polling for live system metrics (every 10s)
+  useEffect(() => {
+    if (!apiAvailable()) return;
+    const interval = setInterval(async () => {
+      try {
+        if (window.pywebview!.api.get_resource_hogs_data) {
+          const hogsStr = await window.pywebview!.api.get_resource_hogs_data();
+          setResourceHogs(JSON.parse(hogsStr));
+        }
+        if (window.pywebview!.api.get_battery_status_data) {
+          const battStr = await window.pywebview!.api.get_battery_status_data();
+          setBatteryStatus(JSON.parse(battStr));
+        }
+      } catch (e) { }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Subscribe to background hooks and event changes
   useEffect(() => {
     fetchSettings();
+    fetchTodos();
+    fetchPhaseNineData();
     window.onSettingsChanged = () => {
       fetchSettings();
+      fetchTodos();
+      fetchPhaseNineData();
     };
 
     let toastCounter = 0;
@@ -350,6 +539,18 @@ export default function MainApp() {
       addToast('notification', `System Notification: ${payload.app}`, `${payload.title}\n${payload.body}`);
     };
 
+    window.onPomodoroUpdate = (payload) => {
+      setPomodoro({
+        active: payload.active,
+        remaining: payload.remaining,
+        total: payload.total,
+        label: payload.label
+      });
+      if (payload.completed) {
+        addToast('notification', 'Pomodoro Session Done', `Congratulations! Session completed: ${payload.label}`);
+      }
+    };
+
     window.addMessageFromPython = (role: Role, text: string) => {
       addMsg(role, text);
     };
@@ -359,9 +560,10 @@ export default function MainApp() {
       window.onClipboardNotification = undefined;
       window.onFileOrganized = undefined;
       window.onWindowsNotification = undefined;
+      window.onPomodoroUpdate = undefined;
       window.addMessageFromPython = undefined;
     };
-  }, [fetchSettings, addMsg]);
+  }, [fetchSettings, addMsg, fetchTodos]);
 
   /* ── Real system stats (every 5s) ─────────────────────────────────────── */
   useEffect(() => {
@@ -430,6 +632,15 @@ export default function MainApp() {
           const hintsJson = JSON.stringify((res as any).steps_hint || []);
           const startRes = await window.pywebview!.api.react_loop(raw, hintsJson);
           addMsg('sys', startRes);
+          setBusy(false);
+          isSubmittingRef.current = false;
+          return;
+        }
+
+        if (res.action === 'clarify') {
+          const reason = (res.full as any)?.reason || 'Clarification required:';
+          const opts = (res.full as any)?.options || [];
+          addMsg('clarify', reason, undefined, undefined, opts);
           setBusy(false);
           isSubmittingRef.current = false;
           return;
@@ -657,6 +868,88 @@ export default function MainApp() {
     setReminderMsg('');
   }
 
+  const decideAppIcon = (name: string): string => {
+    const lower = name.toLowerCase();
+    if (lower.includes('code') || lower.includes('develop') || lower.includes('studio') || lower.includes('compiler') || lower.includes('sublime') || lower.includes('editor')) return 'code';
+    if (lower.includes('spotify') || lower.includes('music') || lower.includes('audio') || lower.includes('sound') || lower.includes('volume') || lower.includes('itunes')) return 'music_note';
+    if (lower.includes('discord') || lower.includes('chat') || lower.includes('slack') || lower.includes('teams') || lower.includes('messenger') || lower.includes('skype') || lower.includes('whatsapp') || lower.includes('telegram')) return 'forum';
+    if (lower.includes('paint') || lower.includes('photoshop') || lower.includes('draw') || lower.includes('design') || lower.includes('illustrator') || lower.includes('gimp') || lower.includes('canvas')) return 'palette';
+    if (lower.includes('chrome') || lower.includes('firefox') || lower.includes('opera') || lower.includes('safari') || lower.includes('brave') || lower.includes('internet') || lower.includes('web') || lower.includes('browser') || lower.includes('edge')) return 'language';
+    if (lower.includes('calc')) return 'calculate';
+    if (lower.includes('note') || lower.includes('text') || lower.includes('word') || lower.includes('office') || lower.includes('doc') || lower.includes('pdf') || lower.includes('excel') || lower.includes('powerpoint')) return 'edit_note';
+    if (lower.includes('game') || lower.includes('steam') || lower.includes('epic') || lower.includes('play') || lower.includes('xbox') || lower.includes('nintendo') || lower.includes('retroarch')) return 'gamepad';
+    if (lower.includes('terminal') || lower.includes('cmd') || lower.includes('powershell') || lower.includes('bash') || lower.includes('command') || lower.includes('console')) return 'terminal';
+    if (lower.includes('security') || lower.includes('shield') || lower.includes('antivirus') || lower.includes('defender') || lower.includes('firewall') || lower.includes('vpn')) return 'security';
+    if (lower.includes('mail') || lower.includes('outlook') || lower.includes('thunderbird') || lower.includes('postbox')) return 'mail';
+    if (lower.includes('database') || lower.includes('sql') || lower.includes('mongo') || lower.includes('postgres') || lower.includes('redis')) return 'database';
+    if (lower.includes('settings') || lower.includes('control') || lower.includes('options') || lower.includes('config')) return 'settings';
+    if (lower.includes('explorer') || lower.includes('folder') || lower.includes('directory') || lower.includes('file')) return 'folder_open';
+    if (lower.includes('task') || lower.includes('process') || lower.includes('monitor') || lower.includes('heart')) return 'monitor_heart';
+    return 'smart_toy';
+  };
+
+  const handleAddAppSubmit = async () => {
+    let label = '';
+    let path = '';
+    
+    if (showCustomAppFallback) {
+      if (!newAppLabel.trim()) {
+        setAddAppError('Label is required for custom app');
+        return;
+      }
+      if (!newAppPath.trim()) {
+        setAddAppError('Path or command is required for custom app');
+        return;
+      }
+      label = newAppLabel.trim();
+      path = newAppPath.trim();
+    } else {
+      if (!selectedInstalledApp) {
+        setAddAppError('Please select an installed app or choose the fallback option');
+        return;
+      }
+      const selectedApp = installedApps.find(a => a.name === selectedInstalledApp);
+      if (!selectedApp) {
+        setAddAppError('Selected app not found');
+        return;
+      }
+      label = selectedApp.name;
+      path = selectedApp.path;
+    }
+
+    const icon = decideAppIcon(label);
+    setAddAppError('');
+
+    if (apiAvailable() && window.pywebview?.api?.add_app) {
+      try {
+        const res = await window.pywebview.api.add_app(label, icon, path);
+        if (res === 'ok') {
+          addMsg('sys', `Added app shortcut: ${label}`);
+          setShowAddAppModal(false);
+          setNewAppLabel('');
+          setNewAppPath('');
+          setSelectedInstalledApp('');
+          setShowCustomAppFallback(false);
+          fetchPhaseNineData();
+        } else {
+          setAddAppError(res);
+        }
+      } catch (e) {
+        setAddAppError(String(e));
+      }
+    } else {
+      // Fallback for demo mode
+      const newApp = { label, icon, path_or_command: path };
+      setApps(prev => [...prev, newApp]);
+      addMsg('sys', `[DEMO MODE] Added app shortcut: ${label}`);
+      setShowAddAppModal(false);
+      setNewAppLabel('');
+      setNewAppPath('');
+      setSelectedInstalledApp('');
+      setShowCustomAppFallback(false);
+    }
+  };
+
   async function handleEditMacro() {
     if (!editMacroName || !editMacroInstruction.trim() || editMacroBusy) return;
     setEditMacroBusy(true);
@@ -718,6 +1011,59 @@ export default function MainApp() {
     if (m.role === 'action') return (
       <div key={m.id} style={{ ...baseStyle, padding: '6px 14px', background: 'rgba(0,40,30,0.4)', border: '1px solid rgba(0,255,156,0.25)', fontSize: 11, color: '#19ff9d', fontWeight: 700 }}>
         {m.text}
+      </div>
+    );
+
+    if (m.role === 'clarify') return (
+      <div key={m.id} className="flex flex-col gap-3 my-2 p-4" style={{
+        fontFamily: 'JetBrains Mono',
+        background: 'rgba(234, 88, 12, 0.08)',
+        borderLeft: '4px solid #ea580c',
+        borderRight: '1px solid rgba(234, 88, 12, 0.2)',
+        borderTop: '1px solid rgba(234, 88, 12, 0.2)',
+        borderBottom: '1px solid rgba(234, 88, 12, 0.2)',
+        boxShadow: '0 0 15px rgba(234, 88, 12, 0.1)',
+        fontSize: 12,
+        color: '#ffdad8'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#f97316', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 2 }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>help_outline</span>
+          CLARIFICATION REQUESTED
+        </div>
+        <div style={{ fontSize: 11, color: '#ffedd5', lineHeight: 1.5, marginBottom: 8 }}>
+          {m.text}
+        </div>
+        {m.options && m.options.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-1">
+            {m.options.map((opt, idx) => (
+              <button
+                key={idx}
+                onClick={() => submitCommand(opt)}
+                disabled={busy}
+                className="px-3 py-1.5 transition-all text-xs font-semibold"
+                style={{
+                  background: 'rgba(234, 88, 12, 0.1)',
+                  border: '1px solid rgba(234, 88, 12, 0.4)',
+                  color: '#fdba74',
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                onMouseEnter={(e) => {
+                  if (!busy) {
+                    e.currentTarget.style.background = 'rgba(234, 88, 12, 0.25)';
+                    e.currentTarget.style.borderColor = 'rgba(234, 88, 12, 0.8)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(234, 88, 12, 0.1)';
+                  e.currentTarget.style.borderColor = 'rgba(234, 88, 12, 0.4)';
+                }}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
 
@@ -1108,10 +1454,10 @@ export default function MainApp() {
   }
 
   /* ── Panel renderers ──────────────────────────────────────────────────── */
-  function PanelButton({ label, icon, cmd }: { label: string; icon: string; cmd: string }) {
+  function PanelButton({ label, icon, cmd, onClick }: { label: string; icon: string; cmd?: string; onClick?: () => void }) {
     return (
       <button
-        onClick={() => { setActiveNav('uplink'); submitCommand(cmd); }}
+        onClick={onClick || (() => { if (cmd) { setActiveNav('uplink'); submitCommand(cmd); } })}
         disabled={busy}
         style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
@@ -1120,6 +1466,7 @@ export default function MainApp() {
           color: busy ? '#3a1818' : '#af8786', cursor: busy ? 'not-allowed' : 'pointer',
           fontFamily: 'JetBrains Mono', fontSize: 9, letterSpacing: '0.06em',
           transition: 'all 0.15s ease',
+          width: '100%', height: '100%',
         }}
         onMouseEnter={e => { if (!busy) { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.15)'; (e.currentTarget as HTMLButtonElement).style.color = '#ffb3b2'; } }}
         onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.06)'; (e.currentTarget as HTMLButtonElement).style.color = busy ? '#3a1818' : '#af8786'; }}
@@ -1131,13 +1478,240 @@ export default function MainApp() {
   }
 
   function renderAppsPanel() {
+    const handleTile = async (layout: string) => {
+      if (!selectedWindows.length) {
+        alert("Please select at least one window process to tile.");
+        return;
+      }
+      if (apiAvailable() && window.pywebview?.api?.tile_windows) {
+        try {
+          const res = await window.pywebview.api.tile_windows(layout, JSON.stringify(selectedWindows));
+          addMsg('sys', `Window tiling command executed: ${res}`);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    };
+
+    const handleTabAction = async (action: string) => {
+      if (apiAvailable() && window.pywebview?.api?.manage_tabs) {
+        try {
+          const res = await window.pywebview.api.manage_tabs(tabAppName, action);
+          addMsg('sys', `Tab action '${action}' sent to '${tabAppName}': ${res}`);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    };
+
     return (
-      <div style={{ padding: 16, height: '100%', overflowY: 'auto' }}>
-        <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 14 }}>
-          APP_CONTROL // LAUNCH_MATRIX
+      <div style={{ padding: 16, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div>
+          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>APP_CONTROL // LAUNCH_MATRIX</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            {apps.map(a => (
+              <div key={a.label} style={{ position: 'relative' }}>
+                <PanelButton 
+                  label={a.label} 
+                  icon={a.icon} 
+                  onClick={async () => {
+                    if (apiAvailable() && window.pywebview?.api?.launch_app) {
+                      try {
+                        addMsg('sys', `Direct launching ${a.label}...`);
+                        const res = await window.pywebview.api.launch_app(a.label, a.path_or_command);
+                        addMsg('sys', `Launch result: ${res}`);
+                      } catch (err) {
+                        addMsg('sys', `Error launching ${a.label}: ${err}`);
+                      }
+                    } else {
+                      addMsg('sys', `[DEMO MODE] Launching ${a.label} via command: open ${a.path_or_command}`);
+                    }
+                  }}
+                />
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`Remove ${a.label} from App Matrix?`)) {
+                      if (apiAvailable() && window.pywebview?.api?.delete_app) {
+                        try {
+                          await window.pywebview.api.delete_app(a.label);
+                          addMsg('sys', `Removed ${a.label} from App Matrix.`);
+                          fetchPhaseNineData();
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      } else {
+                        setApps(prev => prev.filter(x => x.label !== a.label));
+                        addMsg('sys', `[DEMO MODE] Removed ${a.label}.`);
+                      }
+                    }
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    right: 2,
+                    background: 'rgba(255, 0, 60, 0.25)',
+                    border: '1px solid rgba(255, 0, 60, 0.5)',
+                    color: '#ffb3b2',
+                    borderRadius: '50%',
+                    width: 14,
+                    height: 14,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    fontSize: 8,
+                    padding: 0,
+                    opacity: 0.6,
+                    transition: 'opacity 0.15s ease',
+                    zIndex: 10
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255, 0, 60, 0.6)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.background = 'rgba(255, 0, 60, 0.25)'; }}
+                  title="Remove App"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: 9 }}>close</span>
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => setShowAddAppModal(true)}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 6, padding: '14px 8px',
+                background: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,0,60,0.25)',
+                color: '#ff5577', cursor: 'pointer',
+                fontFamily: 'JetBrains Mono', fontSize: 9, letterSpacing: '0.06em',
+                transition: 'all 0.15s ease',
+                minHeight: '74px'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,0,60,0.08)'; e.currentTarget.style.color = '#ffb3b2'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.01)'; e.currentTarget.style.color = '#ff5577'; }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 20 }}>add</span>
+              ADD APP
+            </button>
+          </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-          {APP_ACTIONS.map(a => <PanelButton key={a.label} {...a} />)}
+
+        {/* Live Window Enumeration & Tiling */}
+        <div style={{ borderTop: '1px dashed rgba(255,0,60,0.15)', paddingTop: 16 }}>
+          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>ACTIVE_WINDOWS // TILING_INTERFACE {(Array.isArray(monitorLayouts) && monitorLayouts.length > 0) ? `(${monitorLayouts.length} MONITORS)` : ''}</span>
+            <button 
+              onClick={() => fetchPhaseNineData()} 
+              style={{ background: 'none', border: 'none', color: '#ff5577', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 12 }}>refresh</span> REFRESH
+            </button>
+          </div>
+          
+          <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 10, maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+            {(() => {
+              const wins = Array.isArray(openWindows) ? openWindows : [];
+              if (wins.length === 0) {
+                return <div style={{ color: '#5f3e3e', fontSize: 10, fontFamily: 'JetBrains Mono', textAlign: 'center', padding: '10px 0' }}>NO_ACTIVE_WINDOWS_DETECTED</div>;
+              }
+              return wins.map(w => {
+                const cleanName = w.process_name ? w.process_name.replace('.exe', '') : 'unknown';
+                const isSelected = selectedWindows.includes(cleanName);
+                return (
+                  <div 
+                    key={w.hwnd} 
+                    style={{ 
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', 
+                      background: isSelected ? 'rgba(255,0,60,0.08)' : 'rgba(255,255,255,0.02)',
+                      border: isSelected ? '1px solid rgba(255,0,60,0.3)' : '1px solid transparent',
+                      fontSize: 10, fontFamily: 'JetBrains Mono', transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <input 
+                      type="checkbox" 
+                      checked={isSelected}
+                      onChange={() => {
+                        if (isSelected) {
+                          setSelectedWindows(prev => prev.filter(x => x !== cleanName));
+                        } else {
+                          setSelectedWindows(prev => [...prev, cleanName]);
+                        }
+                      }}
+                      style={{ cursor: 'pointer', accentColor: '#ff003c' }}
+                    />
+                    <span style={{ color: '#ff8899', width: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cleanName}>
+                      {cleanName}
+                    </span>
+                    <span style={{ color: '#8f7b7b', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={w.title}>
+                      {w.title}
+                    </span>
+                    <span style={{ color: '#5f3e3e', fontSize: 8 }}>
+                      hWnd: {w.hwnd}
+                    </span>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>TILE_LAYOUT:</span>
+            <button 
+              onClick={() => handleTile('left_right')}
+              disabled={selectedWindows.length === 0}
+              style={{ flex: 1, padding: '6px', background: 'rgba(255,0,60,0.08)', border: '1px solid rgba(255,0,60,0.25)', color: selectedWindows.length ? '#ffb3b2' : '#5f3e3e', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: selectedWindows.length ? 'pointer' : 'not-allowed' }}
+            >
+              SIDE-BY-SIDE
+            </button>
+            <button 
+              onClick={() => handleTile('grid')}
+              disabled={selectedWindows.length === 0}
+              style={{ flex: 1, padding: '6px', background: 'rgba(255,0,60,0.08)', border: '1px solid rgba(255,0,60,0.25)', color: selectedWindows.length ? '#ffb3b2' : '#5f3e3e', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: selectedWindows.length ? 'pointer' : 'not-allowed' }}
+            >
+              GRID_TILE
+            </button>
+            <button 
+              onClick={() => setSelectedWindows([])}
+              disabled={selectedWindows.length === 0}
+              style={{ padding: '6px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: selectedWindows.length ? '#af8786' : '#5f3e3e', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: selectedWindows.length ? 'pointer' : 'not-allowed' }}
+            >
+              CLEAR
+            </button>
+          </div>
+        </div>
+
+        {/* Tab Manager HUD */}
+        <div style={{ borderTop: '1px dashed rgba(255,0,60,0.15)', paddingTop: 16 }}>
+          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 10 }}>
+            TAB_MANAGER_HUD // PROGRAMMATIC_TABS
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>TARGET_APP:</span>
+            <input 
+              value={tabAppName}
+              onChange={e => setTabAppName(e.target.value)}
+              placeholder="e.g. chrome, msedge, notepad"
+              style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+            {[
+              { label: '➕ NEW TAB', action: 'new_tab' },
+              { label: '❌ CLOSE TAB', action: 'close_tab' },
+              { label: '▶ NEXT TAB', action: 'next_tab' },
+              { label: '◀ PREV TAB', action: 'prev_tab' },
+            ].map(item => (
+              <button 
+                key={item.label}
+                onClick={() => handleTabAction(item.action)}
+                style={{ padding: '8px 4px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 8, cursor: 'pointer', textAlign: 'center' }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.15)'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.06)'; }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -1188,90 +1762,1122 @@ export default function MainApp() {
 
   function renderFilePanel() {
     return (
-      <div style={{ padding: 16, height: '100%', overflowY: 'auto' }}>
-        <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 14 }}>
-          FILE_MATRIX // FILESYSTEM_INTERFACE
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <input
-            value={filePath}
-            onChange={e => setFilePath(e.target.value)}
-            placeholder="Path (e.g. ~/Desktop/file.txt)"
-            style={{ flex: 1, padding: '8px 12px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none' }}
-          />
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+      <div style={{ padding: 16, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Sub-tab navigation */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,0,60,0.15)', paddingBottom: 2 }}>
           {[
-            { label: '📂 List Desktop', cmd: 'list files on desktop' },
-            { label: '📖 Read File', cmd: () => filePath ? `read file ${filePath}` : 'list files on desktop' },
-            { label: '🗑 Delete File', cmd: () => filePath ? `delete file ${filePath}` : null },
-            { label: '📁 New Folder', cmd: () => filePath ? `create folder ${filePath}` : null },
-            { label: '📄 Create File', cmd: () => filePath ? `create file ${filePath}` : null },
-            { label: '📋 List Downloads', cmd: 'list files in downloads folder' },
-          ].map((item) => (
-            <button
-              key={item.label}
-              onClick={() => {
-                const c = typeof item.cmd === 'function' ? item.cmd() : item.cmd;
-                if (c) { setActiveNav('uplink'); submitCommand(c); }
+            { id: 'actions', label: 'QUICK_ACTIONS' },
+            { id: 'search', label: 'SMART_SEARCH' },
+            { id: 'recent', label: 'RECENT_&_RECYCLE' },
+            { id: 'compress', label: 'COMPRESS' },
+          ].map(t => (
+            <button 
+              key={t.id}
+              onClick={() => setFileTab(t.id as any)}
+              style={{ 
+                padding: '6px 10px', background: fileTab === t.id ? 'rgba(255,0,60,0.1)' : 'transparent',
+                border: 'none', borderBottom: fileTab === t.id ? '2px solid #ff003c' : '2px solid transparent',
+                color: fileTab === t.id ? '#ffb3b2' : '#6a4040', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer',
+                transition: 'all 0.15s ease'
               }}
-              disabled={busy}
-              style={{ padding: '12px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#af8786', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 10, textAlign: 'left' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.14)'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.06)'; }}
             >
-              {item.label}
+              {t.label}
             </button>
           ))}
         </div>
+
+        {fileTab === 'actions' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 2 }}>
+              FILE_MATRIX // FILESYSTEM_INTERFACE
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={filePath}
+                onChange={e => setFilePath(e.target.value)}
+                placeholder="Path (e.g. ~/Desktop/file.txt)"
+                style={{ flex: 1, padding: '8px 12px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {[
+                { label: '📂 List Desktop', cmd: 'list files on desktop' },
+                { label: '📖 Read File', cmd: () => filePath ? `read file ${filePath}` : 'list files on desktop' },
+                { label: '🗑 Delete File', cmd: () => filePath ? `delete file ${filePath}` : null },
+                { label: '📁 New Folder', cmd: () => filePath ? `create folder ${filePath}` : null },
+                { label: '📄 Create File', cmd: () => filePath ? `create file ${filePath}` : null },
+                { label: '📋 List Downloads', cmd: 'list files in downloads folder' },
+              ].map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => {
+                    const c = typeof item.cmd === 'function' ? item.cmd() : item.cmd;
+                    if (c) { setActiveNav('uplink'); submitCommand(c); }
+                  }}
+                  disabled={busy}
+                  style={{ padding: '12px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#af8786', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 10, textAlign: 'left' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.14)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,0,60,0.06)'; }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {fileTab === 'search' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>QUERY:</span>
+                <input 
+                  value={fileSearchQuery}
+                  onChange={e => setFileSearchQuery(e.target.value)}
+                  placeholder="Filename..."
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>EXT:</span>
+                <input 
+                  value={fileSearchExt}
+                  onChange={e => setFileSearchExt(e.target.value)}
+                  placeholder="e.g. pdf, txt"
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>DAYS_MODIFIED:</span>
+                <input 
+                  value={fileSearchDays}
+                  onChange={e => setFileSearchDays(e.target.value)}
+                  placeholder="e.g. 7"
+                  type="number"
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>START_DIR:</span>
+                <input 
+                  value={fileSearchStartDir}
+                  onChange={e => setFileSearchStartDir(e.target.value)}
+                  placeholder="e.g. E:/CODING"
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>MIN_SIZE:</span>
+                <input 
+                  value={fileSearchMinSize}
+                  onChange={e => setFileSearchMinSize(e.target.value)}
+                  placeholder="e.g. 500KB, 1MB"
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+              <div>
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>MAX_SIZE:</span>
+                <input 
+                  value={fileSearchMaxSize}
+                  onChange={e => setFileSearchMaxSize(e.target.value)}
+                  placeholder="e.g. 10MB, 2GB"
+                  style={{ width: '100%', padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                setFileSearchBusy(true);
+                if (apiAvailable() && window.pywebview!.api.search_files_data) {
+                  const days = fileSearchDays ? parseInt(fileSearchDays) : undefined;
+                  const res = await window.pywebview!.api.search_files_data(
+                    fileSearchStartDir, 
+                    fileSearchQuery || undefined, 
+                    fileSearchExt || undefined, 
+                    days,
+                    fileSearchMinSize || undefined,
+                    fileSearchMaxSize || undefined
+                  );
+                  setFileSearchResults(JSON.parse(res));
+                }
+                setFileSearchBusy(false);
+              }}
+              disabled={fileSearchBusy}
+              style={{ padding: '8px', background: 'rgba(255,0,60,0.15)', border: '1px solid #FF003C', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer', fontWeight: 700 }}
+            >
+              {fileSearchBusy ? 'SEARCHING...' : 'RUN SMART SEARCH'}
+            </button>
+
+            <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {(() => {
+                const results = Array.isArray(fileSearchResults) ? fileSearchResults : [];
+                if (results.length === 0) {
+                  return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic', textAlign: 'center', padding: '10px 0' }}>NO_RESULTS_FOUND</div>;
+                }
+                return results.map((file, idx) => (
+                  <div 
+                    key={idx}
+                    onClick={() => {
+                      setFilePath(file.path);
+                      setFileTab('actions');
+                    }}
+                    style={{ padding: '4px 6px', background: 'rgba(255,255,255,0.02)', fontSize: 9, fontFamily: 'JetBrains Mono', color: '#ffdad8', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.02)' }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,0,60,0.08)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.02)'}
+                  >
+                    <div style={{ fontWeight: 'bold', color: '#ff5577' }}>{file.name}</div>
+                    <div style={{ color: '#8f7b7b', fontSize: 8 }}>{file.path} ({Math.round(file.size / 1024)} KB)</div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        )}
+
+        {fileTab === 'recent' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 6 }}>RECENT_FILES // Resolved from Recent Folder</div>
+              <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {(() => {
+                  const files = Array.isArray(recentFiles) ? recentFiles : [];
+                  if (files.length === 0) {
+                    return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic' }}>No recent shortcuts found.</div>;
+                  }
+                  return files.map((f, idx) => (
+                    <div 
+                      key={idx} 
+                      onClick={() => { setFilePath(f.path); setFileTab('actions'); }}
+                      style={{ padding: '2px 4px', color: '#ffdad8', fontSize: 9, fontFamily: 'JetBrains Mono', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,0,60,0.08)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      {f.name} <span style={{ color: '#5f3e3e', fontSize: 8 }}>({f.path})</span>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 6 }}>RECYCLE_BIN //</div>
+              <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 150, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {(() => {
+                  const items = Array.isArray(recycleBin) ? recycleBin : [];
+                  if (items.length === 0) {
+                    return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic' }}>Recycle Bin is empty.</div>;
+                  }
+                  return items.map((item, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 8, fontFamily: 'JetBrains Mono', padding: '2px 4px' }}>
+                      <span style={{ color: '#ffdad8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.original_path}>{item.name}</span>
+                      <button 
+                        onClick={async () => {
+                          if (apiAvailable() && window.pywebview!.api.restore_recycle_bin_item) {
+                            const res = await window.pywebview!.api.restore_recycle_bin_item(item.original_path);
+                            addMsg('sys', `Restore file: ${res}`);
+                            fetchPhaseNineData();
+                          }
+                        }}
+                        style={{ background: 'rgba(0,219,233,0.08)', border: '1px solid rgba(0,219,233,0.2)', color: '#00dbe9', fontSize: 8, fontFamily: 'JetBrains Mono', padding: '1px 4px', cursor: 'pointer' }}
+                      >RESTORE</button>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {fileTab === 'compress' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 4 }}>COMPRESS_FILES (ZIP) //</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                <input 
+                  value={compressFiles}
+                  onChange={e => setCompressFiles(e.target.value)}
+                  placeholder="Files JSON (e.g. ['E:/a.txt', 'E:/b.txt'])"
+                  style={{ padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+                <input 
+                  value={compressOutput}
+                  onChange={e => setCompressOutput(e.target.value)}
+                  placeholder="Output ZIP path (e.g. E:/out.zip)"
+                  style={{ padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+              <button 
+                onClick={async () => {
+                  if (!compressFiles || !compressOutput) return;
+                  if (apiAvailable() && window.pywebview!.api.zip_files) {
+                    const res = await window.pywebview!.api.zip_files(compressFiles, compressOutput);
+                    addMsg('sys', `Zip command response: ${res}`);
+                    setCompressFiles('');
+                    setCompressOutput('');
+                    fetchPhaseNineData();
+                  }
+                }}
+                style={{ width: '100%', padding: '8px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+              >ZIP FILES</button>
+            </div>
+
+            <div style={{ borderTop: '1px dashed rgba(255,0,60,0.15)', paddingTop: 14 }}>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 4 }}>DECOMPRESS_ARCHIVE (UNZIP) //</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                <input 
+                  value={decompressArchive}
+                  onChange={e => setDecompressArchive(e.target.value)}
+                  placeholder="ZIP archive path (e.g. E:/out.zip)"
+                  style={{ padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+                <input 
+                  value={decompressOutput}
+                  onChange={e => setDecompressOutput(e.target.value)}
+                  placeholder="Output folder path (e.g. E:/extracted)"
+                  style={{ padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                />
+              </div>
+              <button 
+                onClick={async () => {
+                  if (!decompressArchive || !decompressOutput) return;
+                  if (apiAvailable() && window.pywebview!.api.unzip_files) {
+                    const res = await window.pywebview!.api.unzip_files(decompressArchive, decompressOutput);
+                    addMsg('sys', `Unzip command response: ${res}`);
+                    setDecompressArchive('');
+                    setDecompressOutput('');
+                    fetchPhaseNineData();
+                  }
+                }}
+                style={{ width: '100%', padding: '8px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+              >UNZIP ARCHIVE</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderTodoPanel() {
+    const todoList = Array.isArray(todos) ? todos : [];
+    const activeTodos = todoList.filter(t => t && !t.completed);
+    const completedTodos = todoList.filter(t => t && t.completed);
+
+    const handleAddTodo = async () => {
+      const txt = newTodoText.trim();
+      if (!txt) return;
+      if (apiAvailable()) {
+        try {
+          const res = await window.pywebview!.api.add_todo(txt);
+          if (res === 'ok') {
+            setNewTodoText('');
+            fetchTodos();
+          } else {
+            console.error(res);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        const mockItem = {
+          id: Date.now(),
+          task: txt,
+          completed: 0,
+          created_at: new Date().toISOString()
+        };
+        setTodos(prev => [...prev, mockItem]);
+        setNewTodoText('');
+      }
+    };
+
+    const handleToggleComplete = async (todo: any) => {
+      if (apiAvailable()) {
+        try {
+          const res = await window.pywebview!.api.mark_todo_complete(String(todo.id));
+          if (res === 'ok') {
+            fetchTodos();
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, completed: 1 } : t));
+      }
+    };
+
+    const handleDeleteTodo = async (todoId: any) => {
+      if (apiAvailable()) {
+        try {
+          const res = await window.pywebview!.api.delete_todo(String(todoId));
+          if (res === 'ok') {
+            fetchTodos();
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        setTodos(prev => prev.filter(t => t.id !== todoId));
+      }
+    };
+
+    return (
+      <div style={{ padding: 16, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Sub-tab navigation */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,0,60,0.15)', paddingBottom: 2 }}>
+          {[
+            { id: 'todo', label: 'TODO_&_FOCUS' },
+            { id: 'clipboard', label: 'CLIPBOARD_HISTORY' },
+            { id: 'notes', label: 'NOTES_WRITER' },
+          ].map(t => (
+            <button 
+              key={t.id}
+              onClick={() => setTodoTab(t.id as any)}
+              style={{ 
+                padding: '6px 12px', background: todoTab === t.id ? 'rgba(255,0,60,0.1)' : 'transparent',
+                border: 'none', borderBottom: todoTab === t.id ? '2px solid #ff003c' : '2px solid transparent',
+                color: todoTab === t.id ? '#ffb3b2' : '#6a4040', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {todoTab === 'todo' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 2 }}>
+              TODO_MANAGER // TASK_LEDGER
+            </div>
+
+            {/* Pomodoro Focus session widget */}
+            <div style={{
+              padding: '12px 16px',
+              background: 'rgba(255,0,60,0.02)',
+              border: '1px solid rgba(255,0,60,0.18)',
+              fontFamily: 'JetBrains Mono',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontSize: 10, color: '#ffb3b2', fontWeight: 700, letterSpacing: '0.05em' }}>
+                  🔴 FOCUS_SESSION_TIMER
+                </div>
+                {pomodoro.active && (
+                  <span className="animate-pulse" style={{ fontSize: 9, color: '#FF003C', fontWeight: 700 }}>
+                    RUNNING
+                  </span>
+                )}
+              </div>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                <div style={{ fontSize: 24, fontWeight: 700, color: '#ffb3b2', minWidth: 100 }}>
+                  {pomodoro.active ? (
+                    <span>
+                      {Math.floor(pomodoro.remaining / 60).toString().padStart(2, '0')}:{(pomodoro.remaining % 60).toString().padStart(2, '0')}
+                    </span>
+                  ) : (
+                    <span style={{ color: '#7a5555' }}>25:00</span>
+                  )}
+                </div>
+                
+                <div style={{ flex: 1, color: '#af8786', fontSize: 10 }}>
+                  {pomodoro.active ? (
+                    <div>Currently focusing on: <strong style={{ color: '#FF003C' }}>{pomodoro.label}</strong></div>
+                  ) : (
+                    <div>Start a focus session to boost productivity.</div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {pomodoro.active ? (
+                    <button
+                      onClick={async () => {
+                        if (apiAvailable()) {
+                          await window.pywebview!.api.stop_pomodoro();
+                        } else {
+                          setPomodoro(prev => ({ ...prev, active: false }));
+                        }
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        background: 'rgba(255,0,60,0.12)',
+                        border: '1px solid #FF003C',
+                        color: '#ffb3b2',
+                        fontSize: 9,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      STOP
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={async () => {
+                          if (apiAvailable()) {
+                            await window.pywebview!.api.start_pomodoro(1500, 'Focus Session');
+                          } else {
+                            setPomodoro({ active: true, remaining: 1500, total: 1500, label: 'Focus Session' });
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(255,0,60,0.05)',
+                          border: '1px solid rgba(255,0,60,0.3)',
+                          color: '#ffb3b2',
+                          fontSize: 9,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        25 MIN
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (apiAvailable()) {
+                            await window.pywebview!.api.start_pomodoro(60, 'Quick Test');
+                          } else {
+                            setPomodoro({ active: true, remaining: 60, total: 60, label: 'Quick Test' });
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'rgba(0,219,233,0.05)',
+                          border: '1px solid rgba(0,219,233,0.3)',
+                          color: '#ffb3b2',
+                          fontSize: 9,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        TEST (1M)
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                placeholder="Add new task..."
+                value={newTodoText}
+                onChange={e => setNewTodoText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddTodo(); }}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  background: '#150808',
+                  border: '1px solid rgba(255,0,60,0.2)',
+                  color: '#ffb3b2',
+                  fontFamily: 'JetBrains Mono',
+                  fontSize: 11,
+                  outline: 'none'
+                }}
+              />
+              <button
+                onClick={handleAddTodo}
+                style={{
+                  padding: '8px 16px',
+                  background: 'rgba(255,0,60,0.12)',
+                  border: '1px solid rgba(255,0,60,0.3)',
+                  color: '#ffb3b2',
+                  fontFamily: 'JetBrains Mono',
+                  fontSize: 10,
+                  cursor: 'pointer'
+                }}
+              >ADD</button>
+            </div>
+
+            <div>
+              <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#FF003C', letterSpacing: '0.1em', marginBottom: 8, fontWeight: 'bold' }}>
+                ACTIVE_TASKS ({activeTodos.length})
+              </div>
+              {activeTodos.length === 0 ? (
+                <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#7a5555', padding: '8px 12px', background: 'rgba(255,0,60,0.02)', border: '1px dashed rgba(255,0,60,0.15)' }}>
+                  No active tasks.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {activeTodos.map(todo => (
+                    <div
+                      key={todo.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 12px',
+                        background: 'rgba(255,0,60,0.04)',
+                        border: '1px solid rgba(255,0,60,0.15)',
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 11
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          onChange={() => handleToggleComplete(todo)}
+                          style={{ cursor: 'pointer', accentColor: '#FF003C' }}
+                        />
+                        <span style={{ color: '#ffb3b2' }}>{todo.task}</span>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteTodo(todo.id)}
+                        className="material-symbols-outlined"
+                        style={{
+                          fontSize: 14,
+                          color: '#7a5555',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#FF003C'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#7a5555'}
+                      >
+                        delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#00dbe9', letterSpacing: '0.1em', marginBottom: 8, fontWeight: 'bold' }}>
+                COMPLETED_TASKS ({completedTodos.length})
+              </div>
+              {completedTodos.length === 0 ? (
+                <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#55707a', padding: '8px 12px', background: 'rgba(0,219,233,0.02)', border: '1px dashed rgba(0,219,233,0.15)' }}>
+                  No completed tasks.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {completedTodos.map(todo => (
+                    <div
+                      key={todo.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 12px',
+                        background: 'rgba(0,219,233,0.02)',
+                        border: '1px solid rgba(0,219,233,0.12)',
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 11,
+                        opacity: 0.6
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={true}
+                          disabled
+                          style={{ cursor: 'default', accentColor: '#00dbe9' }}
+                        />
+                        <span style={{ color: '#87afaf', textDecoration: 'line-through' }}>{todo.task}</span>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteTodo(todo.id)}
+                        className="material-symbols-outlined"
+                        style={{
+                          fontSize: 14,
+                          color: '#55707a',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#FF003C'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#55707a'}
+                      >
+                        delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {todoTab === 'clipboard' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>SEARCH:</span>
+              <input 
+                value={clipSearchQuery}
+                onChange={e => setClipSearchQuery(e.target.value)}
+                placeholder="Search clipboard history..."
+                style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+              />
+              {clipSearchQuery && (
+                <button 
+                  onClick={() => setClipSearchQuery('')}
+                  style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', color: '#af8786', fontFamily: 'JetBrains Mono', fontSize: 9, padding: '6px 10px', cursor: 'pointer' }}
+                >
+                  CLEAR
+                </button>
+              )}
+            </div>
+
+            <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(() => {
+                const history = Array.isArray(clipboardHistory) ? clipboardHistory : [];
+                const filtered = history.filter(c => c && c.content?.toLowerCase().includes(clipSearchQuery.toLowerCase()));
+                if (filtered.length === 0) {
+                  return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic', textAlign: 'center', padding: '20px 0' }}>NO_CLIPBOARD_HISTORY_FOUND</div>;
+                }
+                return filtered.map((item, idx) => (
+                  <div key={idx} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,0,60,0.06)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 7, fontFamily: 'JetBrains Mono', color: '#5f3e3e' }}>
+                      <span>CLIPBOARD_ITEM //</span>
+                      <span>{item.timestamp}</span>
+                    </div>
+                    <pre style={{ margin: 0, padding: 6, background: '#090303', border: '1px solid rgba(255,255,255,0.02)', color: '#ffdad8', fontSize: 9, fontFamily: 'JetBrains Mono', whiteSpace: 'pre-wrap', maxHeight: 80, overflowY: 'auto' }}>
+                      {item.content}
+                    </pre>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button 
+                        onClick={async () => {
+                          if (apiAvailable()) {
+                            const res = await window.pywebview!.api.save_chat_log(item.content);
+                            addMsg('sys', `Copied to clipboard: ${res}`);
+                          }
+                        }}
+                        style={{ background: 'rgba(0,219,233,0.08)', border: '1px solid rgba(0,219,233,0.2)', color: '#00dbe9', fontSize: 8, fontFamily: 'JetBrains Mono', padding: '2px 6px', cursor: 'pointer' }}
+                      >
+                        COPY BACK
+                      </button>
+                      <button 
+                        onClick={async () => {
+                          if (apiAvailable() && window.pywebview!.api.delete_clipboard_item) {
+                            await window.pywebview!.api.delete_clipboard_item(item.content);
+                            fetchPhaseNineData();
+                          }
+                        }}
+                        style={{ background: 'rgba(255,0,60,0.08)', border: '1px solid rgba(255,0,60,0.2)', color: '#ff3344', fontSize: 8, fontFamily: 'JetBrains Mono', padding: '2px 6px', cursor: 'pointer' }}
+                      >
+                        DELETE
+                      </button>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        )}
+
+        {todoTab === 'notes' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>NOTES_EDITOR // Documents/notes.md</span>
+              <button 
+                onClick={async () => {
+                  setNotesSaving(true);
+                  if (apiAvailable() && window.pywebview!.api.save_notes_file) {
+                    const res = await window.pywebview!.api.save_notes_file(notesText);
+                    addMsg('sys', `Notes file saved: ${res}`);
+                  }
+                  setNotesSaving(false);
+                }}
+                disabled={notesSaving}
+                style={{ 
+                  background: 'rgba(255,0,60,0.15)', border: '1px solid #FF003C', color: '#ffb3b2', 
+                  fontFamily: 'JetBrains Mono', fontSize: 9, padding: '4px 12px', cursor: 'pointer' 
+                }}
+              >
+                {notesSaving ? 'SAVING...' : 'SAVE NOTES'}
+              </button>
+            </div>
+            <textarea 
+              value={notesText}
+              onChange={e => setNotesText(e.target.value)}
+              style={{ 
+                flex: 1, minHeight: 320, padding: 12, background: '#090303', border: '1px solid rgba(255,0,60,0.25)', 
+                color: '#ffdad8', fontSize: 10, fontFamily: 'JetBrains Mono', lineHeight: 1.5, resize: 'vertical',
+                outline: 'none'
+              }}
+              placeholder="# Personal Notes..."
+            />
+          </div>
+        )}
       </div>
     );
   }
 
   function renderSystemPanel() {
     return (
-      <div style={{ padding: 16, height: '100%', overflowY: 'auto' }}>
-        <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 14 }}>
-          SYSTEM_CLI // SHELL_INTERFACE
+      <div style={{ padding: 16, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Sub-tab navigation */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,0,60,0.15)', paddingBottom: 2 }}>
+          <button 
+            onClick={() => setSysTab('control')}
+            style={{ 
+              padding: '6px 12px', background: sysTab === 'control' ? 'rgba(255,0,60,0.1)' : 'transparent',
+              border: 'none', borderBottom: sysTab === 'control' ? '2px solid #ff003c' : '2px solid transparent',
+              color: sysTab === 'control' ? '#ffb3b2' : '#6a4040', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            SYSTEM_CONTROL
+          </button>
+          <button 
+            onClick={() => setSysTab('ledger')}
+            style={{ 
+              padding: '6px 12px', background: sysTab === 'ledger' ? 'rgba(255,0,60,0.1)' : 'transparent',
+              border: 'none', borderBottom: sysTab === 'ledger' ? '2px solid #ff003c' : '2px solid transparent',
+              color: sysTab === 'ledger' ? '#ffb3b2' : '#6a4040', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            LEDGER_&_FACTS
+          </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 20 }}>
-          {SYSTEM_ACTIONS.map(a => <PanelButton key={a.label} {...a} />)}
-        </div>
+        {sysTab === 'control' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.12em', marginBottom: 8 }}>
+                SYSTEM_CLI // SHELL_INTERFACE
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 10 }}>
+                {SYSTEM_ACTIONS.map(a => <PanelButton key={a.label} {...a} />)}
+              </div>
+            </div>
 
-        <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.1em', marginBottom: 10 }}>
-          RUN_COMMAND //
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <input
-            id="sys-cmd-input"
-            placeholder="e.g.  ipconfig /all"
-            style={{ flex: 1, padding: '8px 12px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none' }}
-            onKeyDown={e => { if (e.key === 'Enter') { const v = (e.currentTarget as HTMLInputElement).value.trim(); if (v) { submitCommand(`run command ${v}`); setActiveNav('uplink'); (e.currentTarget as HTMLInputElement).value = ''; } } }}
-          />
-          <button
-            onClick={() => { const el = document.getElementById('sys-cmd-input') as HTMLInputElement; const v = el?.value.trim(); if (v) { submitCommand(`run command ${v}`); setActiveNav('uplink'); el.value = ''; } }}
-            style={{ padding: '8px 16px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer' }}
-          >RUN</button>
-        </div>
+            {/* Run Command & Powershell Inline Inputs */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#5f3e3e', letterSpacing: '0.1em', marginBottom: 4 }}>
+                  RUN_COMMAND //
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    id="sys-cmd-input"
+                    placeholder="e.g. ipconfig"
+                    style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                    onKeyDown={e => { if (e.key === 'Enter') { const v = (e.currentTarget as HTMLInputElement).value.trim(); if (v) { submitCommand(`run command ${v}`); setActiveNav('uplink'); (e.currentTarget as HTMLInputElement).value = ''; } } }}
+                  />
+                  <button
+                    onClick={() => { const el = document.getElementById('sys-cmd-input') as HTMLInputElement; const v = el?.value.trim(); if (v) { submitCommand(`run command ${v}`); setActiveNav('uplink'); el.value = ''; } }}
+                    style={{ padding: '6px 12px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                  >RUN</button>
+                </div>
+              </div>
+              <div>
+                <div style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#5f3e3e', letterSpacing: '0.1em', marginBottom: 4 }}>
+                  RUN_POWERSHELL //
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    id="sys-ps-input"
+                    placeholder="e.g. Get-Process"
+                    style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                    onKeyDown={e => { if (e.key === 'Enter') { const v = (e.currentTarget as HTMLInputElement).value.trim(); if (v) { submitCommand(`run powershell ${v}`); setActiveNav('uplink'); (e.currentTarget as HTMLInputElement).value = ''; } } }}
+                  />
+                  <button
+                    onClick={() => { const el = document.getElementById('sys-ps-input') as HTMLInputElement; const v = el?.value.trim(); if (v) { submitCommand(`run powershell ${v}`); setActiveNav('uplink'); el.value = ''; } }}
+                    style={{ padding: '6px 12px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                  >RUN PS</button>
+                </div>
+              </div>
+            </div>
 
-        <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: '#5f3e3e', letterSpacing: '0.1em', marginBottom: 10 }}>
-          RUN_POWERSHELL //
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            id="sys-ps-input"
-            placeholder="e.g.  Get-Process"
-            style={{ flex: 1, padding: '8px 12px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none' }}
-            onKeyDown={e => { if (e.key === 'Enter') { const v = (e.currentTarget as HTMLInputElement).value.trim(); if (v) { submitCommand(`run powershell ${v}`); setActiveNav('uplink'); (e.currentTarget as HTMLInputElement).value = ''; } } }}
-          />
-          <button
-            onClick={() => { const el = document.getElementById('sys-ps-input') as HTMLInputElement; const v = el?.value.trim(); if (v) { submitCommand(`run powershell ${v}`); setActiveNav('uplink'); el.value = ''; } }}
-            style={{ padding: '8px 16px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer' }}
-          >RUN PS</button>
-        </div>
+            {/* Battery status */}
+            {batteryStatus && batteryStatus.present && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(255,0,60,0.04)', border: '1px solid rgba(255,0,60,0.12)', padding: '6px 10px', fontSize: 9, fontFamily: 'JetBrains Mono', color: '#ffb3b2' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#ff003c' }}>battery_charging_full</span>
+                <span>BATTERY: {batteryStatus.percent}% ({batteryStatus.power_plugged ? 'CHARGING' : 'DISCHARGING'})</span>
+                {batteryStatus.secsleft > 0 && (
+                  <span style={{ color: '#8f7b7b', marginLeft: 'auto' }}>
+                    REMAINING: {Math.round(batteryStatus.secsleft / 60)} MINS
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* CPU/RAM Top Consuming Processes */}
+            {(() => {
+              const hogs = resourceHogs || { cpu: [], memory: [] };
+              const cpuList = Array.isArray(hogs.cpu) ? hogs.cpu : [];
+              const memList = Array.isArray(hogs.memory) ? hogs.memory : [];
+              if (cpuList.length === 0 && memList.length === 0) return null;
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8 }}>
+                    <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 4, borderBottom: '1px solid rgba(255,0,60,0.15)', paddingBottom: 2 }}>TOP_CPU_CONSUMERS</div>
+                    {cpuList.map((p, i) => (
+                      <div key={`${p.pid}-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, fontFamily: 'JetBrains Mono', color: '#ffb3b2', padding: '1px 0' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 100 }} title={p.name}>{p.name}</span>
+                        <span style={{ color: '#ff5566' }}>{p.cpu}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8 }}>
+                    <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#8f7b7b', marginBottom: 4, borderBottom: '1px solid rgba(255,0,60,0.15)', paddingBottom: 2 }}>TOP_RAM_CONSUMERS</div>
+                    {memList.map((p, i) => (
+                      <div key={`${p.pid}-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, fontFamily: 'JetBrains Mono', color: '#ffb3b2', padding: '1px 0' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 100 }} title={p.name}>{p.name}</span>
+                        <span style={{ color: '#00dbe9' }}>{p.mem_mb}M</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Brightness Slider */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 4 }}>SCREEN_BRIGHTNESS //</div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="100" 
+                  defaultValue="60"
+                  onMouseUp={async (e) => {
+                    const val = e.currentTarget.value;
+                    submitCommand(`set screen brightness to ${val}%`);
+                    setActiveNav('uplink');
+                  }}
+                  style={{ flex: 1, accentColor: '#ff003c', cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#ffb3b2' }}>WMI</span>
+              </div>
+            </div>
+
+            {/* Scheduled Power Controls */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 4 }}>DEFERRED_POWER_COMMANDS //</div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 8, fontFamily: 'JetBrains Mono', color: '#8f7b7b' }}>DELAY (S):</span>
+                <input 
+                  id="power-delay" 
+                  type="number" 
+                  defaultValue="10" 
+                  style={{ width: 50, padding: '4px 6px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, outline: 'none' }}
+                />
+                <button 
+                  onClick={() => {
+                    const delay = (document.getElementById('power-delay') as HTMLInputElement)?.value || '10';
+                    submitCommand(`shutdown in ${delay} seconds`);
+                    setActiveNav('uplink');
+                  }}
+                  style={{ flex: 1, padding: '6px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >SHUTDOWN</button>
+                <button 
+                  onClick={() => {
+                    const delay = (document.getElementById('power-delay') as HTMLInputElement)?.value || '10';
+                    submitCommand(`restart in ${delay} seconds`);
+                    setActiveNav('uplink');
+                  }}
+                  style={{ flex: 1, padding: '6px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >RESTART</button>
+                <button 
+                  onClick={() => {
+                    const delay = (document.getElementById('power-delay') as HTMLInputElement)?.value || '10';
+                    submitCommand(`sleep in ${delay} seconds`);
+                    setActiveNav('uplink');
+                  }}
+                  style={{ flex: 1, padding: '6px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >SLEEP</button>
+              </div>
+            </div>
+
+            {/* WiFi & Bluetooth Profiles */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 4 }}>NETWORKS_AND_WIRELESS //</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button 
+                  onClick={() => { submitCommand("connect to wifi"); setActiveNav('uplink'); }}
+                  style={{ padding: '8px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >⚡ LIST WIFI PROFILES</button>
+                <button 
+                  onClick={() => { submitCommand("list bluetooth devices"); setActiveNav('uplink'); }}
+                  style={{ padding: '8px', background: 'rgba(255,0,60,0.06)', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >⚡ LIST BLUETOOTH DEVICES</button>
+              </div>
+            </div>
+
+            {/* Registry Startup Manager */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 6 }}>REGISTRY_STARTUP_LIST //</div>
+              <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                {(() => {
+                  const apps = Array.isArray(startupApps) ? startupApps : [];
+                  if (apps.length === 0) {
+                    return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic' }}>No startup registry entries found.</div>;
+                  }
+                  return apps.map(app => (
+                    <div key={app.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 8, fontFamily: 'JetBrains Mono' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input 
+                          type="checkbox" 
+                          defaultChecked={true}
+                          onChange={async (e) => {
+                            const checked = e.target.checked;
+                            if (apiAvailable() && window.pywebview!.api.toggle_startup_app) {
+                              const res = await window.pywebview!.api.toggle_startup_app(app.name, checked, app.path);
+                              addMsg('sys', `Toggle startup app '${app.name}': ${res}`);
+                              fetchPhaseNineData();
+                            }
+                          }}
+                          style={{ cursor: 'pointer', accentColor: '#ff003c' }}
+                        />
+                        <span style={{ color: '#ffb3b2' }}>{app.name}</span>
+                      </div>
+                      <span style={{ color: '#5f3e3e', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={app.path}>{app.path}</span>
+                    </div>
+                  ));
+                })()}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input 
+                  value={newStartupName}
+                  onChange={e => setNewStartupName(e.target.value)}
+                  placeholder="App Name"
+                  style={{ flex: 1, padding: '4px 6px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, outline: 'none' }}
+                />
+                <input 
+                  value={newStartupPath}
+                  onChange={e => setNewStartupPath(e.target.value)}
+                  placeholder="Executable Path"
+                  style={{ flex: 2, padding: '4px 6px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, outline: 'none' }}
+                />
+                <button 
+                  onClick={async () => {
+                    if (!newStartupName || !newStartupPath) return;
+                    if (apiAvailable() && window.pywebview!.api.toggle_startup_app) {
+                      const res = await window.pywebview!.api.toggle_startup_app(newStartupName, true, newStartupPath);
+                      addMsg('sys', `Added startup app '${newStartupName}': ${res}`);
+                      setNewStartupName('');
+                      setNewStartupPath('');
+                      fetchPhaseNineData();
+                    }
+                  }}
+                  style={{ padding: '4px 10px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >ADD</button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {/* Visual Execution Ledger */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>EXECUTION_LEDGER // SQLITE_AUDIT</span>
+                <button 
+                  onClick={async () => {
+                    if (apiAvailable() && window.pywebview!.api.undo_last_action) {
+                      const res = await window.pywebview!.api.undo_last_action();
+                      addMsg('sys', `Undo response: ${res}`);
+                      fetchPhaseNineData();
+                    }
+                  }}
+                  style={{ background: 'rgba(255,0,60,0.15)', border: '1px solid #FF003C', color: '#FF003C', fontFamily: 'JetBrains Mono', fontSize: 9, padding: '2px 8px', cursor: 'pointer' }}
+                >
+                  UNDO LAST ACTION
+                </button>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 210, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(() => {
+                  const ledger = Array.isArray(executionLedger) ? executionLedger : [];
+                  if (ledger.length === 0) {
+                    return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic', textAlign: 'center', padding: '10px 0' }}>NO_EXECUTIONS_RECORDED</div>;
+                  }
+                  return ledger.map((row, idx) => (
+                    <div key={`${row.id}-${idx}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, fontFamily: 'JetBrains Mono' }}>
+                        <span style={{ color: '#ff5577', fontWeight: 'bold' }}>{row.action_type}</span>
+                        <span style={{ color: '#5f3e3e' }}>{row.timestamp}</span>
+                      </div>
+                      <div style={{ fontSize: 8, fontFamily: 'JetBrains Mono', color: '#8f7b7b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        Value: {row.value}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 8, fontFamily: 'JetBrains Mono' }}>
+                        <span style={{ color: row.result?.toLowerCase().startsWith('error') ? '#ff3344' : '#00ff99' }}>{row.result}</span>
+                        <button 
+                          onClick={async () => {
+                            if (apiAvailable() && window.pywebview!.api.replay_ledger_action) {
+                              const res = await window.pywebview!.api.replay_ledger_action(row.id);
+                              addMsg('sys', `Replaying action ${row.id}: ${res}`);
+                              fetchPhaseNineData();
+                            }
+                          }}
+                          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', color: '#ffb3b2', fontSize: 8, padding: '1px 4px', cursor: 'pointer' }}
+                        >
+                          REPLAY
+                        </button>
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+
+            {/* Local Fact-Memory Manager */}
+            <div>
+              <div style={{ fontSize: 9, fontFamily: 'JetBrains Mono', color: '#5f3e3e', marginBottom: 6 }}>LOCAL_MEMORIES // KEY_FREE_FACTS</div>
+              <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,0,60,0.1)', padding: 8, maxHeight: 160, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                {(() => {
+                  const factList = Array.isArray(facts) ? facts : [];
+                  if (factList.length === 0) {
+                    return <div style={{ color: '#5f3e3e', fontSize: 9, fontStyle: 'italic', textAlign: 'center', padding: '10px 0' }}>NO_FACTS_STORED</div>;
+                  }
+                  return factList.map(fact => (
+                    <div key={fact} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 8, fontFamily: 'JetBrains Mono', borderBottom: '1px solid rgba(255,255,255,0.01)', paddingBottom: 2 }}>
+                      <span style={{ color: '#ffdad8', flex: 1 }}>{fact}</span>
+                      <button 
+                        onClick={async () => {
+                          if (apiAvailable() && window.pywebview!.api.delete_fact) {
+                            const res = await window.pywebview!.api.delete_fact(fact);
+                            addMsg('sys', `Deleted fact: ${res}`);
+                            fetchPhaseNineData();
+                          }
+                        }}
+                        style={{ background: 'none', border: 'none', color: '#ff3344', cursor: 'pointer', fontSize: 8, fontFamily: 'JetBrains Mono' }}
+                      >DELETE</button>
+                    </div>
+                  ));
+                })()}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input 
+                  value={newFactText}
+                  onChange={e => setNewFactText(e.target.value)}
+                  placeholder="Enter new fact (e.g. My workspace path is E:/coding)"
+                  style={{ flex: 1, padding: '6px 10px', background: '#150808', border: '1px solid rgba(255,0,60,0.2)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 10, outline: 'none' }}
+                  onKeyDown={async e => {
+                    if (e.key === 'Enter' && newFactText.trim()) {
+                      if (apiAvailable() && window.pywebview!.api.save_fact) {
+                        const res = await window.pywebview!.api.save_fact(newFactText.trim());
+                        addMsg('sys', `Saved fact: ${res}`);
+                        setNewFactText('');
+                        fetchPhaseNineData();
+                      }
+                    }
+                  }}
+                />
+                <button 
+                  onClick={async () => {
+                    if (!newFactText.trim()) return;
+                    if (apiAvailable() && window.pywebview!.api.save_fact) {
+                      const res = await window.pywebview!.api.save_fact(newFactText.trim());
+                      addMsg('sys', `Saved fact: ${res}`);
+                      setNewFactText('');
+                      fetchPhaseNineData();
+                    }
+                  }}
+                  style={{ padding: '6px 12px', background: 'rgba(255,0,60,0.12)', border: '1px solid rgba(255,0,60,0.3)', color: '#ffb3b2', fontFamily: 'JetBrains Mono', fontSize: 9, cursor: 'pointer' }}
+                >SAVE</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1338,6 +2944,7 @@ export default function MainApp() {
       case 'file': return renderFilePanel();
       case 'system': return renderSystemPanel();
       case 'comm': return renderCommPanel();
+      case 'todo': return renderTodoPanel();
       default: return null;
     }
   }
@@ -1395,6 +3002,112 @@ export default function MainApp() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ═══ ADD CUSTOM APP MODAL ═════════════════════════════════════ */}
+      {showAddAppModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 110, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ padding: 24, background: '#150808', border: '1px solid rgba(255,0,60,0.35)', fontFamily: 'JetBrains Mono', maxWidth: 450, width: '90%' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#ffb3b2', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 18, color: '#ff525c' }}>add_box</span>
+              UPLINK NEW APPLICATION VERB
+            </div>
+
+            {addAppError && (
+              <div style={{ background: 'rgba(255,0,60,0.1)', border: '1px solid rgba(255,0,60,0.3)', color: '#ff8888', padding: '8px 10px', fontSize: 10, marginBottom: 12 }}>
+                {addAppError}
+              </div>
+            )}
+
+            {!showCustomAppFallback ? (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 9, color: '#ffb3b2', letterSpacing: '0.1em', marginBottom: 6 }}>SELECT INSTALLED APP FROM SYSTEM</div>
+                <select
+                  value={selectedInstalledApp}
+                  onChange={e => setSelectedInstalledApp(e.target.value)}
+                  style={{
+                    width: '100%', padding: '8px 10px', background: '#0d0505',
+                    border: '1px solid rgba(255,0,60,0.25)', color: '#ffdad8',
+                    fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none',
+                    boxSizing: 'border-box', cursor: 'pointer'
+                  }}
+                >
+                  <option value="">-- Choose Installed Application --</option>
+                  {installedApps.map(app => (
+                    <option key={app.name} value={app.name}>
+                      {app.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 9, color: '#ffb3b2', letterSpacing: '0.1em', marginBottom: 6 }}>APPLICATION LABEL (NAME)</div>
+                  <input
+                    type="text"
+                    value={newAppLabel}
+                    onChange={e => setNewAppLabel(e.target.value)}
+                    placeholder="e.g. My Text Editor"
+                    style={{
+                      width: '100%', padding: '8px 10px', background: '#0d0505',
+                      border: '1px solid rgba(255,0,60,0.25)', color: '#ffdad8',
+                      fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 9, color: '#ffb3b2', letterSpacing: '0.1em', marginBottom: 6 }}>EXECUTABLE PATH OR SYSTEM COMMAND</div>
+                  <input
+                    type="text"
+                    value={newAppPath}
+                    onChange={e => setNewAppPath(e.target.value)}
+                    placeholder="e.g. notepad, chrome, or C:\Path\to\app.exe"
+                    style={{
+                      width: '100%', padding: '8px 10px', background: '#0d0505',
+                      border: '1px solid rgba(255,0,60,0.25)', color: '#ffdad8',
+                      fontFamily: 'JetBrains Mono', fontSize: 11, outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
+              <input 
+                type="checkbox"
+                id="custom-app-fallback-chk"
+                checked={showCustomAppFallback}
+                onChange={e => {
+                  setShowCustomAppFallback(e.target.checked);
+                  setAddAppError('');
+                }}
+                style={{ cursor: 'pointer', accentColor: '#ff003c' }}
+              />
+              <label htmlFor="custom-app-fallback-chk" style={{ fontSize: 10, color: '#8f7b7b', fontFamily: 'JetBrains Mono', cursor: 'pointer' }}>
+                Add Custom Path and Label (Fallback)
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button 
+                onClick={handleAddAppSubmit} 
+                style={{ flex: 1, padding: '10px', background: 'rgba(255,0,60,0.15)', border: '1px solid rgba(255,0,60,0.4)', color: '#ff525c', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 11, fontWeight: 700 }}
+              >
+                UPLINK
+              </button>
+              <button 
+                onClick={() => { setShowAddAppModal(false); setAddAppError(''); setSelectedInstalledApp(''); setShowCustomAppFallback(false); }} 
+                style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid rgba(154,112,112,0.4)', color: '#9a7070', cursor: 'pointer', fontFamily: 'JetBrains Mono', fontSize: 11 }}
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1681,6 +3394,14 @@ export default function MainApp() {
                   <span style={{ color: '#FF003C', fontWeight: 700, letterSpacing: '0.05em' }}>SANDBOX_ACTIVE</span>
                 </div>
               )}
+              {pomodoro.active && (
+                <div className="flex items-center gap-2 px-2 py-0.5" style={{ fontFamily: 'JetBrains Mono', fontSize: 9, background: 'rgba(255,0,60,0.1)', border: '1px solid rgba(255,0,60,0.3)' }}>
+                  <span className="material-symbols-outlined animate-pulse" style={{ fontSize: 11, color: '#FF003C', verticalAlign: 'middle' }}>alarm</span>
+                  <span style={{ color: '#ffb3b2', fontWeight: 700 }}>
+                    {pomodoro.label.toUpperCase()}: {Math.floor(pomodoro.remaining / 60).toString().padStart(2, '0')}:{(pomodoro.remaining % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-4">
               {/* ── LLM Provider Dropdown ── */}
@@ -1750,7 +3471,8 @@ export default function MainApp() {
                     activeNav === 'apps' ? 'APP_CONTROL' :
                       activeNav === 'input' ? 'HID_SCREEN' :
                         activeNav === 'file' ? 'FILE_MATRIX' :
-                          activeNav === 'system' ? 'SYSTEM_CLI' : 'COMMS_WEB'}
+                          activeNav === 'system' ? 'SYSTEM_CLI' :
+                            activeNav === 'todo' ? 'TODO_MANAGER' : 'COMMS_WEB'}
                 </span>
                 <span style={{ fontFamily: 'JetBrains Mono', fontSize: 9, color: '#7a5555' }}>0xRAGE_CORE</span>
               </div>
@@ -1975,7 +3697,7 @@ export default function MainApp() {
                 </div>
 
                 {/* Run on Startup */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                   <div>
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#ffb3b2' }}>STARTUP ON BOOT</div>
                     <div style={{ fontSize: 9, color: '#9a7070' }}>Launch agent automatically when Windows starts</div>
@@ -1995,6 +3717,99 @@ export default function MainApp() {
                     {startupEnabled ? 'ENABLED' : 'DISABLED'}
                   </button>
                 </div>
+
+                {/* Macro Recommendations Toggle */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#ffb3b2' }}>MACRO RECOMMENDATIONS</div>
+                    <div style={{ fontSize: 9, color: '#9a7070' }}>Show suggestion popups for repetitive actions</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const currentVal = profile.macro_recommendations_enabled !== 'false';
+                      const newVal = !currentVal;
+                      setProfile(p => ({ ...p, macro_recommendations_enabled: String(newVal) }));
+                      setProfileDraft(d => ({ ...d, macro_recommendations_enabled: String(newVal) }));
+                      if (apiAvailable()) {
+                        await window.pywebview!.api.set_profile('macro_recommendations_enabled', String(newVal));
+                      }
+                    }}
+                    style={{
+                      padding: '6px 12px',
+                      background: (profile.macro_recommendations_enabled !== 'false') ? 'rgba(0,219,233,0.15)' : 'rgba(154,112,112,0.15)',
+                      border: (profile.macro_recommendations_enabled !== 'false') ? '1px solid #00dbe9' : '1px solid #8a6060',
+                      color: (profile.macro_recommendations_enabled !== 'false') ? '#00dbe9' : '#8a6060',
+                      fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer', fontWeight: 700
+                    }}
+                  >
+                    {(profile.macro_recommendations_enabled !== 'false') ? 'ENABLED' : 'DISABLED'}
+                  </button>
+                </div>
+
+                {/* Macro Recommendation Thresholds */}
+                {profile.macro_recommendations_enabled !== 'false' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: 10, background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,0,60,0.08)' }}>
+                    <div>
+                      <div style={{ fontSize: 9, color: '#ffdad8', letterSpacing: '0.1em', marginBottom: 4 }}>MIN FREQUENCY</div>
+                      <select
+                        value={profile.macro_min_freq || '3'}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setProfile(p => ({ ...p, macro_min_freq: val }));
+                          setProfileDraft(d => ({ ...d, macro_min_freq: val }));
+                          if (apiAvailable()) {
+                            await window.pywebview!.api.set_profile('macro_min_freq', val);
+                          }
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          background: '#0d0505',
+                          border: '1px solid rgba(255,0,60,0.25)',
+                          color: '#ffdad8',
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 10,
+                          outline: 'none',
+                        }}
+                      >
+                        <option value="2">2 repeats</option>
+                        <option value="3">3 repeats (Default)</option>
+                        <option value="5">5 repeats</option>
+                        <option value="10">10 repeats</option>
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, color: '#ffdad8', letterSpacing: '0.1em', marginBottom: 4 }}>MAX INTERVAL</div>
+                      <select
+                        value={profile.macro_timeout_sec || '180'}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setProfile(p => ({ ...p, macro_timeout_sec: val }));
+                          setProfileDraft(d => ({ ...d, macro_timeout_sec: val }));
+                          if (apiAvailable()) {
+                            await window.pywebview!.api.set_profile('macro_timeout_sec', val);
+                          }
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          background: '#0d0505',
+                          border: '1px solid rgba(255,0,60,0.25)',
+                          color: '#ffdad8',
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 10,
+                          outline: 'none',
+                        }}
+                      >
+                        <option value="60">1 minute</option>
+                        <option value="180">3 minutes (Default)</option>
+                        <option value="300">5 minutes</option>
+                        <option value="600">10 minutes</option>
+                        <option value="1800">30 minutes</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
 
                 {/* Macros List */}
                 <div style={{ borderTop: '1px solid rgba(255,0,60,0.15)', paddingTop: 16 }}>

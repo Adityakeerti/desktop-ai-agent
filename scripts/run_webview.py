@@ -149,6 +149,60 @@ class Api:
         except Exception as e:
             return f"error: {e}"
 
+    # ── Todo List API ──────────────────────────────────────────────────────────
+
+    def get_todos(self):
+        """Return all todo items as a JSON string."""
+        return json.dumps(memory.list_todos())
+
+    def add_todo(self, task: str):
+        """Add a new task. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.add_todo(task)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: task already exists or failed to add"
+        except Exception as e:
+            return f"error: {e}"
+
+    def mark_todo_complete(self, task_id_or_name: str):
+        """Mark task completed. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.mark_todo_complete(task_id_or_name)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: task not found"
+        except Exception as e:
+            return f"error: {e}"
+
+    def delete_todo(self, task_id_or_name: str):
+        """Delete task. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.delete_todo(task_id_or_name)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: task not found"
+        except Exception as e:
+            return f"error: {e}"
+
+    def start_pomodoro(self, duration: int, label: str):
+        """Starts a Pomodoro focus timer from React. Returns 'ok'."""
+        try:
+            execute({"action": "start_pomodoro", "duration_seconds": duration, "label": label})
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
+
+    def stop_pomodoro(self):
+        """Stops the active Pomodoro focus timer from React. Returns 'ok'."""
+        try:
+            execute({"action": "stop_pomodoro"})
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
 
     # ── Core command pipeline ──────────────────────────────────────────────────
     
@@ -226,13 +280,26 @@ class Api:
             self._last_action = action_dict
             return {"action": "run_macro", "full": action_dict, "result": "Success"}
 
+        # ── Cancel interception ─────────────────────────────────────────────
+        if cmd_lower in ("cancel", "cancel action", "cancel command"):
+            action_dict = {"action": "reply", "value": "❌ Action cancelled."}
+            self._last_action = action_dict
+            return {
+                "action": "reply",
+                "full": action_dict,
+                "result": "Action cancelled by user",
+                "intent": "SINGLE_ACTION",
+                "intent_reason": "User cancelled the ambiguous command",
+            }
+
         # ── Intent classification pre-step ──────────────────────────────────
         print(f"[Api] Classifying intent for: {command!r}")
         intent_result = _classify_intent(command, global_memory.get_history())
         intent_label   = intent_result.get("intent", "SINGLE_ACTION")
         intent_reason  = intent_result.get("reason", "")
         intent_hints   = intent_result.get("steps_hint", [])
-        print(f"[Api] Intent: {intent_label} — {intent_reason}")
+        intent_conf    = intent_result.get("confidence", 1.0)
+        print(f"[Api] Intent: {intent_label} (conf: {intent_conf}) — {intent_reason}")
 
         # ── UNSAFE: block immediately ────────────────────────────────────────
         if intent_label == "UNSAFE":
@@ -259,6 +326,31 @@ class Api:
                 "full": action_dict,
                 "result": "Success",
                 "intent": "QUESTION",
+                "intent_reason": intent_reason,
+            }
+
+        # ── AMBIGUOUS or low confidence: request clarification ───────────────
+        if intent_label == "AMBIGUOUS" or intent_conf < 0.6:
+            options = intent_result.get("options", [])
+            if not isinstance(options, list):
+                options = []
+            if not options:
+                options = ["Proceed with best guess", "Cancel"]
+            else:
+                if not any(o.strip().lower() in ("cancel", "cancel action", "cancel command") for o in options):
+                    options.append("Cancel")
+
+            action_dict = {
+                "action": "clarify",
+                "options": options,
+                "reason": intent_reason or "The command is ambiguous or confidence is low."
+            }
+            self._last_action = action_dict
+            return {
+                "action": "clarify",
+                "full": action_dict,
+                "result": "Clarification required",
+                "intent": "AMBIGUOUS",
                 "intent_reason": intent_reason,
             }
 
@@ -683,7 +775,444 @@ class Api:
             print(f"[Api] Download chat log error: {e}")
             return f"Error saving file: {e}"
 
+    # ── Phase 9: Frontend Updates Bridges ──────────────────────────────────────
 
+    def get_open_windows(self):
+        """Returns JSON list of currently visible windows."""
+        from backend.utils.window_utils import get_visible_windows
+        try:
+            return json.dumps(get_visible_windows())
+        except Exception as e:
+            return json.dumps([])
+
+    def get_monitor_layouts(self):
+        """Returns JSON list of monitor bounds."""
+        from backend.utils.window_utils import get_monitor_layouts
+        try:
+            return json.dumps(get_monitor_layouts())
+        except Exception as e:
+            return json.dumps([])
+
+    def tile_windows(self, layout: str, apps_json: str):
+        """Tiles specified apps in the given layout layout."""
+        try:
+            apps = json.loads(apps_json)
+            res = _execute_backend({"action": "tile_windows", "layout": layout, "apps": apps}, "tile windows")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
+
+    def manage_tabs(self, app_name: str, tab_action: str):
+        """Manages browser/app tabs."""
+        try:
+            res = _execute_backend({"action": "manage_tabs", "app": app_name, "tab_action": tab_action}, "manage tabs")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
+
+    def get_execution_ledger(self, limit: int = 50):
+        """Returns latest execution ledger entries as JSON."""
+        memory.init_db()
+        import sqlite3
+        conn = sqlite3.connect(memory.DB_PATH)
+        cursor = conn.cursor()
+        rows = []
+        try:
+            cursor.execute("""
+            SELECT id, action_type, value, parameters, timestamp, result 
+            FROM execution_ledger 
+            ORDER BY id DESC LIMIT ?
+            """, (limit,))
+            for r in cursor.fetchall():
+                rows.append({
+                    "id": r[0],
+                    "action_type": r[1],
+                    "value": r[2],
+                    "parameters": json.loads(r[3]) if r[3] else {},
+                    "timestamp": r[4],
+                    "result": r[5]
+                })
+        except Exception as e:
+            print(f"Error reading execution ledger: {e}")
+        finally:
+            conn.close()
+        return json.dumps(rows)
+
+    def undo_last_action(self):
+        """Executes undo of last action."""
+        try:
+            res = _execute_backend({"action": "undo_last_action"}, "undo action")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
+
+    def replay_ledger_action(self, action_id: int):
+        """Replays an action from execution ledger by its ID."""
+        memory.init_db()
+        import sqlite3
+        conn = sqlite3.connect(memory.DB_PATH)
+        cursor = conn.cursor()
+        action_dict = None
+        try:
+            cursor.execute("""
+            SELECT action_type, value, parameters 
+            FROM execution_ledger 
+            WHERE id = ?
+            """, (action_id,))
+            r = cursor.fetchone()
+            if r:
+                action_dict = {
+                    "action": r[0],
+                    "value": r[1],
+                    **json.loads(r[2])
+                }
+        except Exception as e:
+            print(f"Error fetching ledger action for replay: {e}")
+        finally:
+            conn.close()
+
+        if action_dict:
+            try:
+                res = _execute_backend(action_dict, f"replay action {action_id}")
+                hooks.trigger_ui_refresh()
+                return res
+            except Exception as e:
+                return f"error: {e}"
+        return f"error: Action ID {action_id} not found."
+
+    def get_all_facts(self):
+        """Returns all stored facts as JSON."""
+        try:
+            return json.dumps(memory.get_all_facts())
+        except Exception as e:
+            return json.dumps([])
+
+    def save_fact(self, fact: str):
+        """Saves a new fact/preference."""
+        try:
+            ok = memory.save_fact(fact)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: could not save fact"
+        except Exception as e:
+            return f"error: {e}"
+
+    def delete_fact(self, fact: str):
+        """Deletes a fact/preference."""
+        try:
+            ok = memory.delete_fact_by_text(fact)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: could not delete fact"
+        except Exception as e:
+            return f"error: {e}"
+
+    def get_battery_status_data(self):
+        """Returns structured battery information."""
+        if not _PSUTIL:
+            return json.dumps({"present": False})
+        try:
+            batt = psutil.sensors_battery()
+            if not batt:
+                return json.dumps({"present": False})
+            return json.dumps({
+                "present": True,
+                "percent": batt.percent,
+                "power_plugged": batt.power_plugged,
+                "secsleft": batt.secsleft
+            })
+        except Exception as e:
+            return json.dumps({"present": False, "error": str(e)})
+
+    def get_resource_hogs_data(self):
+        """Returns top CPU and memory hogs as JSON."""
+        if not _PSUTIL:
+            return json.dumps({"cpu": [], "memory": []})
+        try:
+            processes = []
+            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info']):
+                try:
+                    cpu = proc.info['cpu_percent'] or 0.0
+                    mem_mb = (proc.info['memory_info'].rss or 0) / (1024 * 1024)
+                    processes.append({
+                        "pid": proc.info['pid'],
+                        "name": proc.info['name'],
+                        "cpu": cpu,
+                        "mem_mb": round(mem_mb, 1)
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            
+            cpu_hogs = sorted(processes, key=lambda x: x['cpu'], reverse=True)[:5]
+            mem_hogs = sorted(processes, key=lambda x: x['mem_mb'], reverse=True)[:5]
+            return json.dumps({
+                "cpu": cpu_hogs,
+                "memory": mem_hogs
+            })
+        except Exception as e:
+            return json.dumps({"cpu": [], "memory": [], "error": str(e)})
+
+    def get_startup_apps(self):
+        """Lists registered startup apps as JSON."""
+        import winreg
+        reg_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_READ)
+            count = winreg.QueryInfoKey(key)[1]
+            entries = []
+            for i in range(count):
+                val_name, val_data, val_type = winreg.EnumValue(key, i)
+                entries.append({"name": val_name, "path": val_data})
+            winreg.CloseKey(key)
+            return json.dumps(entries)
+        except Exception as e:
+            return json.dumps([])
+
+    def toggle_startup_app(self, name: str, enabled: bool, path: str = ""):
+        """Toggles a startup app registration (adding/removing from registry)."""
+        import winreg
+        reg_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        if enabled:
+            if not name or not path:
+                return "error: missing name or path"
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_WRITE)
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, path)
+                winreg.CloseKey(key)
+                hooks.trigger_ui_refresh()
+                return "ok"
+            except Exception as e:
+                return f"error: {e}"
+        else:
+            if not name:
+                return "error: missing name"
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_WRITE)
+                winreg.DeleteValue(key, name)
+                winreg.CloseKey(key)
+                hooks.trigger_ui_refresh()
+                return "ok"
+            except FileNotFoundError:
+                return "ok"
+            except Exception as e:
+                return f"error: {e}"
+
+    def get_clipboard_history_data(self, limit: int = 20):
+        """Returns clipboard history entries as JSON."""
+        try:
+            rows = memory.get_clipboard_history(limit)
+            return json.dumps([{"content": r[0], "timestamp": r[1]} for r in rows])
+        except Exception as e:
+            return json.dumps([])
+
+    def delete_clipboard_item(self, text: str):
+        """Deletes a clipboard entry from SQLite database."""
+        memory.init_db()
+        import sqlite3
+        conn = sqlite3.connect(memory.DB_PATH)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM clipboard_history WHERE content = ?", (text,))
+            conn.commit()
+            hooks.trigger_ui_refresh()
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
+        finally:
+            conn.close()
+
+    def get_recent_files_data(self, limit: int = 20):
+        """Returns JSON list of recent files resolved from shortcuts."""
+        from backend.utils.file_search import get_recent_files
+        try:
+            return json.dumps(get_recent_files(limit))
+        except Exception as e:
+            return json.dumps([])
+
+    def get_recycle_bin_data(self):
+        """Returns JSON list of recycle bin items."""
+        from backend.utils.file_search import get_recycle_bin_items
+        try:
+            return json.dumps(get_recycle_bin_items())
+        except Exception as e:
+            return json.dumps([])
+
+    def restore_recycle_bin_item(self, path: str):
+        """Restores a recycle bin item by name or path."""
+        from backend.utils.file_search import restore_recycle_bin_item
+        try:
+            ok = restore_recycle_bin_item(path)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: failed to restore"
+        except Exception as e:
+            return f"error: {e}"
+
+    def search_files_data(self, start_dir: str, query: str = None, ext: str = None, days: int = None, min_size: str = None, max_size: str = None):
+        """Executes smart file search and returns matching files as JSON."""
+        from backend.utils.file_search import recursive_search_files
+        try:
+            res = recursive_search_files(start_dir, query or None, ext or None, days, min_size or None, max_size or None)
+            return json.dumps(res)
+        except Exception as e:
+            return json.dumps([])
+
+    def zip_files(self, files_json: str, output_path: str):
+        """Compresses files to zip archive."""
+        try:
+            files = json.loads(files_json)
+            res = _execute_backend({"action": "zip_files", "files": files, "output": output_path}, "zip files")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
+
+    def unzip_files(self, archive_path: str, output_dir: str):
+        """Extracts files from archive."""
+        try:
+            res = _execute_backend({"action": "unzip_files", "archive": archive_path, "output": output_dir}, "unzip files")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
+
+    def read_notes_file(self):
+        """Reads notes.md from user docs or workspace."""
+        path = os.path.join(os.path.expanduser('~'), 'Documents', 'notes.md')
+        if not os.path.exists(path):
+            return "# Personal Notes\n\nCreated by R.A.G.E.\n"
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            return f"Error reading notes: {e}"
+
+    def save_notes_file(self, content: str):
+        """Saves notes.md in user docs."""
+        path = os.path.join(os.path.expanduser('~'), 'Documents', 'notes.md')
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            hooks.trigger_ui_refresh()
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
+
+    # ── Dynamic App Matrix API ───────────────────────────────────────────────
+
+    def get_apps(self):
+        """Retrieve all apps as a JSON string for dynamic App Matrix."""
+        try:
+            return json.dumps(memory.get_apps())
+        except Exception as e:
+            print(f"[Api] Error getting apps: {e}")
+            return json.dumps([])
+
+    def get_installed_apps(self):
+        """Get a list of installed applications on Windows from registry."""
+        import winreg
+        apps = []
+        seen_names = set()
+        
+        reg_keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+        ]
+        
+        for root_key, sub_key in reg_keys:
+            try:
+                key = winreg.OpenKey(root_key, sub_key, 0, winreg.KEY_READ)
+                count = winreg.QueryInfoKey(key)[0]
+                for i in range(count):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        subkey = winreg.OpenKey(key, subkey_name)
+                        try:
+                            name, _ = winreg.QueryValueEx(subkey, "DisplayName")
+                            if not name or name in seen_names:
+                                continue
+                            
+                            path = ""
+                            try:
+                                path, _ = winreg.QueryValueEx(subkey, "DisplayIcon")
+                            except FileNotFoundError:
+                                try:
+                                    install_dir, _ = winreg.QueryValueEx(subkey, "InstallLocation")
+                                    if install_dir:
+                                        path = install_dir
+                                except FileNotFoundError:
+                                    pass
+                            
+                            if path:
+                                if "," in path:
+                                    path = path.split(",")[0]
+                                path = path.strip('"')
+                            
+                            if not path:
+                                try:
+                                    uninst, _ = winreg.QueryValueEx(subkey, "UninstallString")
+                                    if uninst:
+                                        path = uninst
+                                except FileNotFoundError:
+                                    pass
+                                    
+                            apps.append({
+                                "name": name.strip(),
+                                "path": path.strip() if path else name.strip()
+                            })
+                            seen_names.add(name)
+                        except FileNotFoundError:
+                            pass
+                        finally:
+                            winreg.CloseKey(subkey)
+                    except Exception:
+                        pass
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+                
+        apps.sort(key=lambda x: x["name"].lower())
+        return json.dumps(apps)
+
+    def add_app(self, label: str, icon: str, path_or_command: str):
+        """Add a custom app. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.add_app(label, icon, path_or_command)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: could not add app (label must be unique)"
+        except Exception as e:
+            return f"error: {e}"
+
+    def delete_app(self, label: str):
+        """Delete an app by its label. Returns 'ok' or 'error: ...'"""
+        try:
+            ok = memory.delete_app(label)
+            if ok:
+                hooks.trigger_ui_refresh()
+                return "ok"
+            return "error: app not found"
+        except Exception as e:
+            return f"error: {e}"
+
+    def launch_app(self, label: str, path_or_command: str):
+        """Launch an app directly without prompting or LLM routing."""
+        print(f"[Api] Direct launch request for: {label} (path/cmd: {path_or_command})")
+        try:
+            res = _execute_backend({"action": "open_app", "value": path_or_command}, f"open {label}")
+            hooks.trigger_ui_refresh()
+            return res
+        except Exception as e:
+            return f"error: {e}"
 
     # ── Window control ─────────────────────────────────────────────────────────
 
@@ -751,6 +1280,8 @@ if __name__ == '__main__':
         hooks.start_clipboard_watcher()
         hooks.start_file_watcher()
         hooks.start_notifications_watcher()
+        import backend.utils.clipboard_daemon as clipboard_daemon
+        clipboard_daemon.start_daemon()
         hooks.start_tray_icon(hooks.summon_panel, lambda: os._exit(0))
 
     webview.start(on_startup, (window,), debug=False)

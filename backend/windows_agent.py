@@ -306,6 +306,28 @@ def build_prompt(command: str, history: list = None) -> str:
     except Exception:
         pass
 
+    # Check if the command is a correction (Phase 2 Task 2.3)
+    correction_str = ""
+    is_correction = False
+    lower_cmd = command.lower().strip()
+    correction_triggers = ("no i meant", "no, i meant", "correction:", "i meant", "no meant", "no, meant", "actually")
+    if any(trigger in lower_cmd for trigger in correction_triggers):
+        is_correction = True
+        
+    if is_correction:
+        try:
+            last_action = memory.get_last_ledger_action()
+            if last_action:
+                correction_str = (
+                    "PREVIOUS ACTION CONTEXT:\n"
+                    f"Last Agent action attempted: {last_action['action_type']} with value '{last_action['value']}'\n"
+                    f"Last Action outcome/result: {last_action['result']}\n"
+                    f"User correction command: \"{command}\"\n"
+                    "Extract user intent based on this correction to execute what they actually wanted (e.g. changing browser/app or target path).\n\n"
+                )
+        except Exception:
+            pass
+
     # Fix #5 — inject actual screen resolution into prompt so LLM generates correct coords
     screen_w, screen_h = _get_screen_size()
     
@@ -342,11 +364,28 @@ def build_prompt(command: str, history: list = None) -> str:
     if _interests:  identity_parts.append(f"interested in {_interests}")
     identity_str = f"The user's name is {_user_name}" + (f" ({', '.join(identity_parts)})" if identity_parts else "") + "."
 
+    # Retrieve relevant facts from local memory (Phase 2 Task 2.4)
+    local_facts_str = ""
+    try:
+        all_facts = memory.get_all_facts()
+        if all_facts:
+            matched_facts = []
+            cmd_words = set(command.lower().split())
+            for fact in all_facts:
+                fact_lower = fact.lower()
+                fact_words = set(fact_lower.split())
+                if cmd_words.intersection(fact_words) or "user is" in fact_lower or "name is" in fact_lower or "prefers" in fact_lower:
+                    matched_facts.append(fact)
+            if matched_facts:
+                local_facts_str = "RELEVANT USER FACTS (from memory):\n" + "\n".join(f"- {f}" for f in matched_facts) + "\n\n"
+    except Exception:
+        pass
+
     return f"""You are {_agent_name}, an advanced Windows PC automation controller for {_user_name}'s PC. Parse the user's command into ONE action JSON object.
 {tone_line}
 {identity_str}
 
-{history_str}{pref_str}CURRENT COMMAND: "{command}"
+{history_str}{pref_str}{local_facts_str}{correction_str}CURRENT COMMAND: "{command}"
 
 ENVIRONMENT:
 - OS: Windows
@@ -366,8 +405,9 @@ CRITICAL RULES:
 8. CRITICAL: If asked to open a website in a SPECIFIC browser, use "open_app" AND include the "url" field (e.g., {{"action":"open_app", "value":"brave", "url":"https://google.com"}}).
 9. If you are unsure what to do, or if the request is ambiguous, use the "reply" action to ask for clarification. DO NOT guess destructive actions.
 10. Failure recovery: If an app is not found, try variations of its name. Prefer the least destructive action.
-    11. No Auto-Tool Generation: Do NOT hallucinate shell commands (run_command/run_powershell) for unsupported actions. Instead, hallucinate a fake action name (e.g., {{"action": "turn_off_wifi"}}) so the system can log it for future implementation. CRITICAL: Do NOT hallucinate fake actions for things that ALREADY exist (e.g., set_reminder, search_web, get_weather, set_volume, send_whatsapp — these are all real actions). Use the real action when the user's intent matches an existing tool.
+11. No Auto-Tool Generation: Do NOT hallucinate shell commands (run_command/run_powershell) for unsupported actions. Instead, hallucinate a fake action name (e.g., {{"action": "turn_off_wifi"}}) so the system can log it for future implementation. CRITICAL: Do NOT hallucinate fake actions for things that ALREADY exist (e.g., set_reminder, search_web, get_weather, set_volume, send_whatsapp — these are all real actions). Use the real action when the user's intent matches an existing tool.
 12. CRITICAL: If the user asks to open an app AND perform a task that has a dedicated action (e.g., "open whatsapp and send message..."), use the dedicated action (e.g., "send_whatsapp") directly because it handles opening the app automatically. DO NOT fallback to a plain "open_app" action.
+13. CRITICAL: The "tile_windows" and "position_window" actions require target applications to be already running. They do NOT open/launch apps. If the user wants to tile/position apps that are not open, you MUST first open them using "open_app" before tiling.
 
 AVAILABLE ACTIONS (pick exactly one):
 
@@ -381,6 +421,8 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"get_active_window"}}                                  - get title of focused window
 {{"action":"focus_window","value":"Calculator"}}                  - bring window to foreground
 {{"action":"open_url","value":"https://youtube.com"}}             - open URL in default browser
+{{"action":"tile_windows","layout":"left_right","apps":["chrome","notepad"]}} - tile ALREADY RUNNING application windows side-by-side or in a grid (layout options: left_right, top_bottom, grid) (does NOT open/launch apps)
+{{"action":"position_window","value":"notepad","monitor":0,"x":100,"y":100,"width":800,"height":500}} - position an ALREADY RUNNING application window on a specific monitor (does NOT open/launch apps)
 
 === KEYBOARD / MOUSE ===
 {{"action":"type_text","value":"Hello World"}}                    - type text at current cursor
@@ -407,19 +449,49 @@ AVAILABLE ACTIONS (pick exactly one):
 {{"action":"create_folder","path":"MyFolder"}}                    - create directory
 {{"action":"delete_folder","path":"MyFolder"}}                    - delete directory tree
 {{"action":"list_files","path":"~/Desktop"}}                      - list files in directory
+{{"action":"smart_file_search","query":"notes","ext":".md","days":7}} - recursively search files, or get recent files, or list/restore Recycle Bin
 {{"action":"zip_files","files":["a.txt","b.txt"],"output":"out.zip"}} - compress files
+{{"action":"unzip_files","archive":"archive.zip","output":"extracted_folder"}} - decompress archive
 {{"action":"download_file","url":"https://...","path":"file.zip"}} - download a file
+{{"action":"run_code_snippet","code":"print('hello')","language":"python"}} - run code in sandbox
+{{"action":"read_file_tail","path":"log.txt","lines":50}} - read last N lines of a file
+{{"action":"git_command","command":"status","path":"repo_dir"}} - run git commands
+{{"action":"docker_command","command":"ps"}} - run docker commands
+{{"action":"http_request","url":"http://...","method":"GET"}} - send HTTP requests
+{{"action":"scrape_web_page","url":"http://...","selector":".price"}} - scrape web page content
+{{"action":"download_page_images","url":"http://...","output":"downloads"}} - download images from web page
+{{"action":"fill_web_form","url":"http://...","actions":[{"selector":"#name","action":"fill","value":"text"}]}} - autofill forms
+{{"action":"store_credential","service":"github","username":"user","password":"pw"}} - encrypt & store credential
+{{"action":"get_credential","service":"github"}} - retrieve stored credential
+{{"action":"delete_credential","service":"github","username":"user"}} - delete stored credential
+{{"action":"search_browser_history","query":"gmail","browser":"chrome"}} - search browser history (chrome, edge)
+{{"action":"send_email","to":"user@example.com","subject":"hello","body":"text"}} - send email via Outlook/SMTP
+{{"action":"draft_email","to":"user@example.com","subject":"hello","body":"text"}} - draft email in Outlook
+{{"action":"fetch_emails","limit":5}} - fetch recent emails from inbox
+{{"action":"create_calendar_event","subject":"Meeting","start":"2026-06-15 13:00","duration":30}} - schedule calendar event
+{{"action":"list_calendar_events","limit":10}} - list calendar events
+{{"action":"delete_calendar_event","subject":"Meeting"}} - delete calendar event
+{{"action":"get_active_notifications"}} - read active Windows desktop toast notifications
+{{"action":"compile_daily_briefing","city":"London"}} - compile daily briefing summary
 
 === SYSTEM ===
 {{"action":"empty_recycle_bin"}}                                 - empty the recycle bin
 {{"action":"turn_off_wifi"}}                                     - turn off Wi-Fi
+{{"action":"connect_wifi","name":"HomeNetwork"}}                  - connect to saved WiFi network profile
+{{"action":"manage_bluetooth","command":"list"}}                 - bluetooth controls: list, enable, disable, connect, disconnect
+{{"action":"power_command","type":"sleep","delay":5}}            - power control: sleep, shutdown, restart, hibernate, abort
 {{"action":"run_command","value":"ipconfig /all"}}               - run shell/cmd command
 {{"action":"run_powershell","value":"Get-Process"}}              - run PowerShell command
 {{"action":"get_system_info"}}                                   - CPU/RAM/disk info
+{{"action":"get_battery_status"}}                                - get battery level and charging state
+{{"action":"get_resource_hogs"}}                                 - find top CPU/RAM consuming processes
 {{"action":"set_volume","value":70}}                             - set master volume 0-100
+{{"action":"set_brightness","value":50}}                         - set screen brightness 0-100
+{{"action":"startup_manager","command":"list"}}                  - manage startup apps: list, enable, disable
 {{"action":"get_clipboard"}}                                     - get clipboard text
 {{"action":"set_clipboard","value":"some text"}}                 - put text in clipboard
 {{"action":"paste_text"}}                                        - paste clipboard content (Ctrl+V)
+{{"action":"list_clipboard_history","limit":20}}                 - list recent clipboard entries
 
 === WEB / SEARCH ===
 {{"action":"search_web","value":"python tutorial"}}              - Google search
@@ -430,8 +502,15 @@ AVAILABLE ACTIONS (pick exactly one):
 === WEATHER ===
 {{"action":"get_weather","city":"New York"}}                     - get current weather
 
-=== REMINDER ===
+=== REMINDER / NOTES / TODOS ===
 {{"action":"set_reminder","message":"Call mom","seconds":300}}   - set a timed reminder
+{{"action":"take_note","content":"Meeting is at 2PM","category":"Work"}} - add note to notes.md
+{{"action":"add_todo","task":"Buy milk"}}                            - add task to todo list
+{{"action":"list_todos"}}                                           - view all todos
+{{"action":"mark_todo_complete","value":"Buy milk"}}                 - mark todo completed by ID or name
+{{"action":"delete_todo","value":"Buy milk"}}                       - delete todo by ID or name
+{{"action":"start_pomodoro","value":1500,"label":"Work"}}            - start a focus timer (seconds)
+{{"action":"stop_pomodoro"}}                                        - stop the active focus timer
 
 === VOICE / CHAT ===
 {{"action":"say","value":"Task complete"}}                       - speak text via TTS
@@ -443,6 +522,15 @@ AVAILABLE ACTIONS (pick exactly one):
 
 
 EXAMPLES (30 pairs — cover every action category):
+User: "tile chrome and notepad side by side"
+{{"action": "tile_windows", "layout": "left_right", "apps": ["chrome", "notepad"]}}
+
+User: "grid tile explorer and notepad"
+{{"action": "tile_windows", "layout": "grid", "apps": ["explorer", "notepad"]}}
+
+User: "put explorer on monitor 1 at 100, 100 with size 800x500"
+{{"action": "position_window", "value": "explorer", "monitor": 0, "x": 100, "y": 100, "width": 800, "height": 500}}
+
 User: "Open notepad"
 {{"action": "open_app", "value": "notepad"}}
 
@@ -739,7 +827,7 @@ def ask_llm(command: str, history: list = None) -> dict:
 # ──────────────────────────────────────────────────────────────
 # INTENT CLASSIFIER  — pre-step that labels the user command
 # ──────────────────────────────────────────────────────────────
-INTENT_LABELS = ("SINGLE_ACTION", "MULTI_STEP", "QUESTION", "UNSAFE")
+INTENT_LABELS = ("SINGLE_ACTION", "MULTI_STEP", "QUESTION", "UNSAFE", "AMBIGUOUS")
 
 def _build_intent_prompt(command: str, history: list = None) -> str:
     history_str = ""
@@ -749,18 +837,26 @@ def _build_intent_prompt(command: str, history: list = None) -> str:
     return f"""You are an intent classifier for a Windows automation agent.
 Classify the user's command into exactly ONE of these labels:
 
-SINGLE_ACTION  - A single, atomic desktop action that can be completed in a single step (e.g., just opening one app, just setting the volume once, just checking the weather once, just taking a screenshot, just replying to a greeting).
-MULTI_STEP     - Any command that requires 2 or more actions or steps, whether they are sequential, independent, or feed into each other (e.g., "check the weather AND tell me out loud AND set my volume to 70%", "create a folder AND copy files inside it", "open youtube, claude, AND then open VS Code", "research X AND email me").
-QUESTION       - A conversational question or request for information the agent can answer without executing OS actions (e.g., "what can you do?", "how are you?", "what is Python?")
-UNSAFE         - The command requests dangerous, destructive, or harmful operations (format drive, delete system32, mass file deletion without path, registry wipes, etc.)
+SINGLE_ACTION  - A single, atomic desktop action that can be completed in a single step (e.g., just opening one app, just setting the volume once, just checking the weather once, just taking a screenshot, just replying to a greeting, or tiling/positioning windows).
+MULTI_STEP     - Any command that requires 2 or more actions or steps, whether they are sequential, independent, or feed into each other (e.g., "check the weather AND tell me out loud AND set my volume to 70%").
+QUESTION       - A conversational question or request for information the agent can answer without executing OS actions (e.g., "what is Python?").
+UNSAFE         - The command requests dangerous, destructive, or harmful operations (format drive, delete system32, etc.).
+AMBIGUOUS      - The command is vague, incomplete, or refers to a generic entity without specifying which one (e.g., "delete document", "open file", "kill process", "play music", "go to page", "copy file").
 
 {history_str}Command: "{command}"
 
 Respond with ONLY a JSON object with these fields:
-{{"intent": "<LABEL>", "reason": "<one sentence>", "steps_hint": ["step1", "step2", ...] }}
+{{
+  "intent": "<LABEL>",
+  "reason": "<one sentence explanation>",
+  "steps_hint": ["step1", "step2", ...],
+  "confidence": <float value between 0.0 and 1.0>,
+  "options": ["specific clarification option 1", "specific clarification option 2", ...]
+}}
 
-For SINGLE_ACTION or QUESTION or UNSAFE, steps_hint should be an empty array [].
-For MULTI_STEP, steps_hint must list 2-8 plain-English steps the agent should take in order.
+For SINGLE_ACTION, QUESTION, UNSAFE, steps_hint should be [].
+For AMBIGUOUS, provide 2-4 specific interactive choice options in the "options" list to clarify what the user might mean (e.g. for "delete document", suggest "Delete undo_test.txt", "Delete notes.txt", "Cancel action").
+Ensure confidence is low (e.g. 0.3 to 0.5) if the command is AMBIGUOUS.
 
 RESPOND WITH ONLY THE JSON OBJECT."""
 
@@ -768,7 +864,7 @@ RESPOND WITH ONLY THE JSON OBJECT."""
 def classify_intent(command: str, history: list = None) -> dict:
     """Classify a user command before routing it.
 
-    Returns a dict with keys: intent, reason, steps_hint.
+    Returns a dict with keys: intent, reason, steps_hint, confidence, options.
     Falls back to SINGLE_ACTION on any error so the normal flow continues.
     """
     raw_prompt = "__RAW_PROMPT__:" + _build_intent_prompt(command, history)
@@ -788,12 +884,15 @@ def classify_intent(command: str, history: list = None) -> dict:
                 if label not in INTENT_LABELS:
                     label = "SINGLE_ACTION"
                 result["intent"] = label
+                # Ensure confidence and options are present
+                result.setdefault("confidence", 1.0)
+                result.setdefault("options", [])
                 return result
         except Exception as e:
             log.debug("classify_intent: provider %s failed: %s", name, e)
             continue
 
-    return {"intent": "SINGLE_ACTION", "reason": "classifier unavailable", "steps_hint": []}
+    return {"intent": "SINGLE_ACTION", "reason": "classifier unavailable", "steps_hint": [], "confidence": 1.0, "options": []}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -865,23 +964,64 @@ CRITICAL RULES:
 4. Pick ONE atomic action from the available list below.
 5. Use previous step results as context — reference file paths, URLs, or data from earlier results.
 6. CRITICAL: If you are unsure what to do, use "reply" to ask for clarification. Do NOT guess destructive actions.
+7. CRITICAL: The "tile_windows" and "position_window" actions require target applications to be already running. They do NOT open/launch apps. If the user wants to tile/position apps that are not open, you MUST first open them using "open_app" (one by one) before tiling.
 
 AVAILABLE ACTIONS (same as normal agent):
+{{"action":"tile_windows","layout":"left_right","apps":["chrome","notepad"]}}
+{{"action":"position_window","value":"notepad","monitor":0,"x":100,"y":100,"width":800,"height":500}}
 {{"action":"open_app","value":"chrome","url":"https://..."}}
 {{"action":"open_url","value":"https://..."}}
 {{"action":"search_web","value":"query"}}
 {{"action":"run_powershell","value":"command"}}
 {{"action":"run_command","value":"cmd"}}
 {{"action":"get_system_info"}}
+{{"action":"connect_wifi","name":"..."}}
+{{"action":"manage_bluetooth","command":"..."}}
+{{"action":"power_command","type":"sleep","delay":5}}
+{{"action":"set_brightness","value":50}}
+{{"action":"startup_manager","command":"list"}}
+{{"action":"get_battery_status"}}
+{{"action":"get_resource_hogs"}}
 {{"action":"screenshot","path":"{home_dir}/Desktop/shot.png"}}
 {{"action":"read_file","path":"..."}}
 {{"action":"create_file","path":"...","content":"..."}}
 {{"action":"list_files","path":"..."}}
+{{"action":"smart_file_search","query":"...","ext":".pdf","days":7}}
+{{"action":"zip_files","files":["..."],"output":"..."}}
+{{"action":"unzip_files","archive":"...","output":"..."}}
+{{"action":"run_code_snippet","code":"...","language":"..."}}
+{{"action":"read_file_tail","path":"...","lines":50}}
+{{"action":"git_command","command":"...","path":"..."}}
+{{"action":"docker_command","command":"..."}}
+{{"action":"http_request","url":"...","method":"..."}}
+{{"action":"scrape_web_page","url":"...","selector":"..."}}
+{{"action":"download_page_images","url":"...","output":"..."}}
+{{"action":"fill_web_form","url":"...","actions":[]}}
+{{"action":"store_credential","service":"...","username":"...","password":"..."}}
+{{"action":"get_credential","service":"...","username":"..."}}
+{{"action":"delete_credential","service":"...","username":"..."}}
+{{"action":"search_browser_history","query":"...","browser":"..."}}
+{{"action":"send_email","to":"...","subject":"...","body":"..."}}
+{{"action":"draft_email","to":"...","subject":"...","body":"..."}}
+{{"action":"fetch_emails","limit":5}}
+{{"action":"create_calendar_event","subject":"...","start":"...","duration":30}}
+{{"action":"list_calendar_events","limit":10}}
+{{"action":"delete_calendar_event","subject":"..."}}
+{{"action":"get_active_notifications"}}
+{{"action":"compile_daily_briefing","city":"..."}}
 {{"action":"type_text","value":"..."}}
 {{"action":"press_keys","value":"ctrl+c"}}
 {{"action":"click_element","value":"..."}}
 {{"action":"get_clipboard"}}
 {{"action":"set_clipboard","value":"..."}}
+{{"action":"list_clipboard_history","limit":20}}
+{{"action":"take_note","content":"...","category":"..."}}
+{{"action":"add_todo","task":"..."}}
+{{"action":"list_todos"}}
+{{"action":"mark_todo_complete","value":"..."}}
+{{"action":"delete_todo","value":"..."}}
+{{"action":"start_pomodoro","value":1500,"label":"..."}}
+{{"action":"stop_pomodoro"}}
 {{"action":"send_whatsapp","contact":"...","message":"..."}}
 {{"action":"get_weather","city":"..."}}
 {{"action":"set_volume","value":70}}
@@ -1215,6 +1355,141 @@ class TrackedPopen(_orig_popen):
 subprocess.Popen = TrackedPopen
 
 
+def get_pre_action_state(action: dict) -> dict:
+    """Query state before executing an action to support undoing it."""
+    state = {}
+    a = action.get("action", "")
+    v = action.get("value", "")
+    
+    if a == "set_volume":
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            speakers = AudioUtilities.GetSpeakers()
+            dev = getattr(speakers, "_dev", speakers)
+            interface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            vol_ctrl  = cast(interface, POINTER(IAudioEndpointVolume))
+            state["old_value"] = int(vol_ctrl.GetMasterVolumeLevelScalar() * 100)
+        except Exception:
+            state["old_value"] = 50
+            
+    elif a == "set_clipboard":
+        try:
+            import win32clipboard
+            win32clipboard.OpenClipboard()
+            data = win32clipboard.GetClipboardData()
+            win32clipboard.CloseClipboard()
+            state["old_value"] = data
+        except Exception:
+            state["old_value"] = ""
+            
+    return state
+
+
+def get_undo_action(last_action: dict) -> dict | None:
+    """Return the inverse action dictionary to undo the last action."""
+    a_type = last_action.get("action_type", "")
+    val = last_action.get("value", "")
+    params = last_action.get("parameters", {})
+    
+    if a_type == "open_app":
+        return {"action": "close_app", "value": val}
+    elif a_type == "close_app":
+        return {"action": "open_app", "value": val}
+    elif a_type == "create_file":
+        path = params.get("path") or val
+        return {"action": "delete_file", "path": path, "confirmed": True}
+    elif a_type == "create_folder":
+        path = params.get("path") or val
+        return {"action": "delete_folder", "path": path, "confirmed": True}
+    elif a_type == "set_volume":
+        old_val = params.get("old_value", 50)
+        return {"action": "set_volume", "value": old_val}
+    elif a_type == "set_clipboard":
+        old_val = params.get("old_value", "")
+        return {"action": "set_clipboard", "value": old_val}
+    elif a_type == "maximize_window":
+        return {"action": "minimize_window", "value": val}
+    elif a_type == "minimize_window":
+        return {"action": "maximize_window", "value": val}
+        
+    return None
+
+
+def update_local_memories_from_message(command: str):
+    """
+    Sends the user message to the LLM to extract new facts, resolve contradictions,
+    and update local_memories table.
+    """
+    import backend.memory as memory
+    
+    # 1. Fetch current facts
+    current_facts = memory.get_all_facts()
+    facts_list_str = "\n".join(f"- {f}" for f in current_facts) if current_facts else "No facts currently stored."
+    
+    # 2. Build the memory extractor prompt
+    prompt = f"""You are J.A.R.V.I.S.'s Local Fact & Memory Extractor.
+Analyze the user's command/message and the current known facts about the user.
+Extract any new persistent facts, preferences, settings, or details about the user (e.g. name, browser choice, project directory, hobbies, rules).
+If a new fact contradicts or supersedes an existing fact, specify which exact existing fact to delete.
+
+Current Known Facts:
+{facts_list_str}
+
+User's Command/Message: "{command}"
+
+Respond with ONLY a JSON object containing:
+{{
+  "add": ["new fact 1", "new fact 2", ...],
+  "delete": ["exact text of existing fact to delete", ...]
+}}
+
+If there are no facts to add or delete, return:
+{{
+  "add": [],
+  "delete": []
+}}
+
+RESPOND WITH ONLY THE JSON OBJECT, NO EXTRA TEXT."""
+
+    # 3. Call the LLM to extract
+    try:
+        raw_prompt = "__RAW_PROMPT__:" + prompt
+        
+        if SELECTED_PROVIDER and SELECTED_PROVIDER != "Auto (Fallback)":
+            chain = [(n, fn) for n, fn in PROVIDERS if n == SELECTED_PROVIDER]
+            if not chain:
+                chain = PROVIDERS
+        else:
+            chain = PROVIDERS
+            
+        result_dict = None
+        for name, func in chain:
+            try:
+                res = func(raw_prompt)
+                if isinstance(res, dict):
+                    result_dict = res
+                    break
+                elif isinstance(res, str):
+                    result_dict = _parse_json(res)
+                    break
+            except Exception:
+                continue
+                
+        if result_dict:
+            # Process add facts
+            for fact in result_dict.get("add", []):
+                if fact.strip():
+                    memory.save_fact(fact)
+            # Process delete facts
+            for fact in result_dict.get("delete", []):
+                if fact.strip():
+                    memory.delete_fact_by_text(fact)
+    except Exception as e:
+        log.debug("update_local_memories_from_message failed: %s", e)
+
+
 def execute(action: dict, command: str = "", record_in_history: bool = True) -> str:
     """
     Wrapper for action execution. Integrates dangerous action blocklists,
@@ -1253,9 +1528,28 @@ def execute(action: dict, command: str = "", record_in_history: bool = True) -> 
         except Exception:
             pass
             
+    # Get pre-action state for undo support
+    pre_state = {}
+    try:
+        pre_state = get_pre_action_state(action)
+    except Exception:
+        pass
+            
     # Run actual action
     result = _execute_core(action)
     
+    # Record successful action into ledger (Phase 2 Task 2.1)
+    if not result.startswith("Error"):
+        try:
+            a_type = action.get("action", "")
+            val = action.get("value", "")
+            params = {k: v for k, v in action.items() if k not in ("action", "value")}
+            # Merge pre-action state
+            params.update(pre_state)
+            memory.record_ledger_action(a_type, val, params, result)
+        except Exception as e:
+            log.debug("Failed to record action in execution ledger: %s", e)
+            
     # Log missing tool automatically if the result is an unknown action
     if result.startswith("Unknown action:"):
         try:
@@ -1269,8 +1563,80 @@ def execute(action: dict, command: str = "", record_in_history: bool = True) -> 
     except Exception:
         pass
         
+    # 5. Extract/update facts in local memory (Phase 2 Task 2.4)
+    if command and record_in_history and not result.startswith("Error") and "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            import threading
+            t = threading.Thread(target=update_local_memories_from_message, args=(command,), daemon=True)
+            t.start()
+        except Exception:
+            pass
+        
     return result
 
+
+
+POMODORO_THREAD = None
+POMODORO_CANCELLED = False
+
+
+def _pomodoro_timer_loop(duration_seconds: int, label: str):
+    global POMODORO_THREAD, POMODORO_CANCELLED
+    total = duration_seconds
+    remaining = duration_seconds
+    
+    import backend.hooks as hooks
+    
+    while remaining > 0 and not POMODORO_CANCELLED:
+        js_code = f"if (window.onPomodoroUpdate) window.onPomodoroUpdate({json.dumps({'active': True, 'remaining': remaining, 'total': total, 'label': label})});"
+        if hooks._webview_window:
+            try:
+                hooks._webview_window.evaluate_js(js_code)
+            except Exception:
+                pass
+        time.sleep(1)
+        remaining -= 1
+        
+    if POMODORO_CANCELLED:
+        js_code = f"if (window.onPomodoroUpdate) window.onPomodoroUpdate({json.dumps({'active': False, 'remaining': 0, 'total': total, 'label': label, 'cancelled': True})});"
+        if hooks._webview_window:
+            try:
+                hooks._webview_window.evaluate_js(js_code)
+            except Exception:
+                pass
+        return
+        
+    # Done!
+    js_code = f"if (window.onPomodoroUpdate) window.onPomodoroUpdate({json.dumps({'active': False, 'remaining': 0, 'total': total, 'label': label, 'completed': True})});"
+    if hooks._webview_window:
+        try:
+            hooks._webview_window.evaluate_js(js_code)
+        except Exception:
+            pass
+            
+    # Chime
+    try:
+        import winsound
+        winsound.Beep(523, 200) # C5
+        winsound.Beep(659, 200) # E5
+        winsound.Beep(784, 400) # G5
+    except Exception:
+        pass
+        
+    # Desktop Toast notification
+    payload_data = {
+        "app": "Pomodoro Focus",
+        "title": "Focus Session Completed!",
+        "body": f"Congratulations! You completed your focus session: {label}."
+    }
+    js_toast = f"if (window.onWindowsNotification) window.onWindowsNotification({json.dumps(payload_data)});"
+    if hooks._webview_window:
+        try:
+            hooks._webview_window.evaluate_js(js_toast)
+        except Exception:
+            pass
+            
+    POMODORO_THREAD = None
 
 
 def _execute_core(action: dict) -> str:
@@ -1279,6 +1645,7 @@ def _execute_core(action: dict) -> str:
     Raises no exceptions — all errors are caught and returned as strings.
     """
     try:
+        global POMODORO_THREAD, POMODORO_CANCELLED
         a = action.get("action", "")
         v = action.get("value", "")
 
@@ -1369,6 +1736,17 @@ def _execute_core(action: dict) -> str:
         elif a == "open_app":
             app_path = _resolve_app_path(str(v))
             url = action.get("url", "")
+            
+            # Check if app is already running and has a visible window (Phase 1 Task 1.2)
+            if not url:
+                try:
+                    from backend.utils.window_utils import app_state_detection, focus_window_hwnd
+                    existing_hwnd = app_state_detection(str(v))
+                    if existing_hwnd:
+                        if focus_window_hwnd(existing_hwnd):
+                            return f"Focused existing instance of: {v}"
+                except Exception as e:
+                    log.debug("Failed to focus existing app window for %s: %s", v, e)
             
             clean_path = app_path.strip('"')
             needs_search = False
@@ -1466,6 +1844,36 @@ def _execute_core(action: dict) -> str:
                 wins[0].activate()
                 return f"Focused: {wins[0].title}"
             return f"Window not found: {v}"
+
+        elif a == "tile_windows":
+            layout = action.get("layout", "left_right")
+            apps = action.get("apps", [])
+            if not apps and isinstance(v, list):
+                apps = v
+            if not apps:
+                return "Error: Missing list of apps to tile."
+            from backend.utils.window_utils import tile_windows_layout
+            return tile_windows_layout(layout, apps)
+
+        elif a == "position_window":
+            app = str(v)
+            monitor = int(action.get("monitor", 0))
+            x = action.get("x")
+            y = action.get("y")
+            w = action.get("width")
+            h = action.get("height")
+            x = int(x) if x is not None and str(x).strip() != "" else None
+            y = int(y) if y is not None and str(y).strip() != "" else None
+            w = int(w) if w is not None and str(w).strip() != "" else None
+            h = int(h) if h is not None and str(h).strip() != "" else None
+            from backend.utils.window_utils import position_window_on_monitor
+            return position_window_on_monitor(app, monitor, x, y, w, h)
+
+        elif a == "manage_tabs":
+            app = str(action.get("app", v or "chrome"))
+            tab_action = str(action.get("tab_action", "new_tab"))
+            from backend.utils.window_utils import manage_app_tabs
+            return manage_app_tabs(app, tab_action)
 
         # ── Keyboard / Mouse ──────────────────────────────────────────────────
         elif a == "type_text":
@@ -1651,7 +2059,37 @@ def _execute_core(action: dict) -> str:
                     fp = os.path.expandvars(os.path.expanduser(str(f)))
                     if os.path.exists(fp):
                         zf.write(fp, os.path.basename(fp))
-            return f"Zipped {len(files)} files → {output}"
+            return f"Zipped {len(files)} files -> {output}"
+
+        elif a == "unzip_files":
+            archive = action.get("archive", action.get("value", ""))
+            destination = action.get("output", action.get("destination", action.get("dst", "")))
+            
+            if not archive:
+                return "Error: Missing archive path."
+            
+            archive_path = os.path.expandvars(os.path.expanduser(str(archive)))
+            if not os.path.exists(archive_path):
+                return f"Error: Archive file '{archive_path}' does not exist."
+                
+            if not destination:
+                base, ext = os.path.splitext(archive_path)
+                destination = base
+                
+            dest_dir = os.path.expandvars(os.path.expanduser(str(destination)))
+            os.makedirs(dest_dir, exist_ok=True)
+            
+            if archive_path.lower().endswith(".zip"):
+                with zipfile.ZipFile(archive_path, "r") as zf:
+                    zf.extractall(dest_dir)
+                return f"Successfully extracted zip archive '{archive_path}' to '{dest_dir}'."
+            elif archive_path.lower().endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz")):
+                import tarfile
+                with tarfile.open(archive_path, "r:*") as tf:
+                    tf.extractall(dest_dir)
+                return f"Successfully extracted tar archive '{archive_path}' to '{dest_dir}'."
+            else:
+                return f"Error: Unsupported archive format '{archive_path}'. Only .zip and tar archives are supported."
 
         elif a == "download_file":
             url  = str(action.get("url", v))
@@ -1663,6 +2101,422 @@ def _execute_core(action: dict) -> str:
                 for chunk in resp.iter_content(65536):
                     f.write(chunk)
             return f"Downloaded to: {path}"
+
+        elif a == "run_code_snippet":
+            import sys
+            import shlex
+            import time
+            code = action.get("code", action.get("value", ""))
+            lang = action.get("language", action.get("lang", "python")).lower().strip()
+            
+            if not code:
+                return "Error: No code provided to run."
+                
+            sandbox_dir = os.path.join(os.getcwd(), "sandbox")
+            os.makedirs(sandbox_dir, exist_ok=True)
+            
+            ext_map = {
+                "python": ".py", "py": ".py",
+                "javascript": ".js", "js": ".js", "node": ".js",
+                "powershell": ".ps1", "ps1": ".ps1", "ps": ".ps1",
+                "batch": ".bat", "cmd": ".bat", "bat": ".bat"
+            }
+            
+            ext = ext_map.get(lang, ".txt")
+            temp_file = os.path.join(sandbox_dir, f"snippet_{int(time.time())}{ext}")
+            
+            try:
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    f.write(code)
+                    
+                if ext == ".py":
+                    cmd_args = [sys.executable, temp_file]
+                elif ext == ".js":
+                    cmd_args = ["node", temp_file]
+                elif ext == ".ps1":
+                    cmd_args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", temp_file]
+                elif ext == ".bat":
+                    cmd_args = ["cmd", "/c", temp_file]
+                else:
+                    return f"Error: Unsupported language '{lang}'."
+                    
+                res = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
+                
+                output = []
+                if res.stdout:
+                    output.append(f"STDOUT:\n{res.stdout}")
+                if res.stderr:
+                    output.append(f"STDERR:\n{res.stderr}")
+                if not res.stdout and not res.stderr:
+                    output.append("Execution finished with no output.")
+                    
+                return "\n".join(output)
+            except subprocess.TimeoutExpired:
+                return "Error: Execution timed out (30s limit)."
+            except Exception as e:
+                return f"Error executing code snippet: {e}"
+            finally:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except Exception:
+                        pass
+
+        elif a == "read_file_tail":
+            path = action.get("path", action.get("value", ""))
+            lines_count = action.get("lines", action.get("n", 50))
+            try:
+                lines_count = int(lines_count)
+            except ValueError:
+                lines_count = 50
+                
+            if not path:
+                return "Error: Missing file path."
+                
+            file_path = os.path.expandvars(os.path.expanduser(str(path)))
+            if not os.path.exists(file_path):
+                return f"Error: File '{file_path}' does not exist."
+                
+            try:
+                from collections import deque
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    last_lines = deque(f, maxlen=lines_count)
+                return "".join(last_lines)
+            except Exception as e:
+                return f"Error reading file tail: {e}"
+
+        elif a == "git_command":
+            import shlex
+            cmd_str = action.get("command", action.get("args", action.get("value", "")))
+            repo_dir = action.get("path", action.get("directory", os.getcwd()))
+            if not cmd_str:
+                return "Error: Missing git command."
+            
+            repo_dir = os.path.expandvars(os.path.expanduser(str(repo_dir)))
+            if not os.path.exists(repo_dir):
+                return f"Error: Directory '{repo_dir}' does not exist."
+                
+            cmd = ["git"]
+            cmd.extend(shlex.split(cmd_str))
+            
+            try:
+                res = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True, timeout=30)
+                output = []
+                if res.stdout:
+                    output.append(res.stdout)
+                if res.stderr:
+                    output.append(res.stderr)
+                if not res.stdout and not res.stderr:
+                    output.append("Git command executed with no output.")
+                return "\n".join(output)
+            except Exception as e:
+                return f"Error running git command: {e}"
+
+        elif a == "docker_command":
+            import shlex
+            cmd_str = action.get("command", action.get("args", action.get("value", "")))
+            if not cmd_str:
+                return "Error: Missing docker command."
+                
+            cmd = ["docker"]
+            cmd.extend(shlex.split(cmd_str))
+            
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                output = []
+                if res.stdout:
+                    output.append(res.stdout)
+                if res.stderr:
+                    output.append(res.stderr)
+                if not res.stdout and not res.stderr:
+                    output.append("Docker command executed with no output.")
+                return "\n".join(output)
+            except Exception as e:
+                return f"Error running docker command: {e}"
+
+        elif a == "http_request":
+            url = action.get("url", action.get("value", ""))
+            method = action.get("method", "GET").upper().strip()
+            headers = action.get("headers")
+            params = action.get("params")
+            data = action.get("data")
+            json_data = action.get("json")
+            
+            if not url:
+                return "Error: Missing URL for HTTP request."
+                
+            try:
+                import requests
+                import json
+                resp = requests.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    data=data,
+                    json=json_data,
+                    timeout=30
+                )
+                
+                output = [
+                    f"Status Code: {resp.status_code} {resp.reason}",
+                    f"Headers: {dict(resp.headers)}"
+                ]
+                
+                try:
+                    js = resp.json()
+                    output.append(f"Body (JSON):\n{json.dumps(js, indent=2)}")
+                except ValueError:
+                    output.append(f"Body:\n{resp.text}")
+                    
+                return "\n".join(output)
+            except Exception as e:
+                return f"Error executing HTTP request: {e}"
+
+        elif a == "scrape_web_page":
+            import backend.utils.browser_utils as bu
+            url = action.get("url", action.get("value", ""))
+            selector = action.get("selector")
+            wait_for = action.get("wait_for")
+            if not url:
+                return "Error: Missing URL for web page scraping."
+            res = bu.scrape_web_page(url, selector, wait_for)
+            if "error" in res:
+                return f"Error scraping web page: {res['error']}"
+            import json
+            out = [f"Title: {res['title']}", f"Text Content (Snippet):\n{res['text']}"]
+            if res.get("extracted_elements"):
+                out.append(f"Extracted Elements:\n{json.dumps(res['extracted_elements'], indent=2)}")
+            return "\n\n".join(out)
+
+        elif a == "download_page_images":
+            import backend.utils.browser_utils as bu
+            url = action.get("url", action.get("value", ""))
+            output_dir = action.get("output", action.get("output_dir", action.get("destination", "")))
+            if not url:
+                return "Error: Missing URL for image download."
+            downloaded = bu.download_page_images(url, output_dir or None)
+            if not downloaded:
+                return "No images were successfully downloaded."
+            return f"Successfully downloaded {len(downloaded)} images to '{output_dir or 'downloads'}':\n" + "\n".join(f"  • {img}" for img in downloaded)
+
+        elif a == "fill_web_form":
+            import backend.utils.browser_utils as bu
+            url = action.get("url", action.get("value", ""))
+            actions_list = action.get("actions", [])
+            if not url:
+                return "Error: Missing URL for web form autofill."
+            if not actions_list:
+                return "Error: Missing actions list for web form autofill."
+            return bu.fill_web_form(url, actions_list)
+
+        elif a == "store_credential":
+            import backend.utils.browser_utils as bu
+            service = action.get("service", "")
+            username = action.get("username", "")
+            password = action.get("password", action.get("password_plain", ""))
+            if not service or not username or not password:
+                return "Error: Missing service, username, or password."
+            ok = bu.store_credential(service, username, password)
+            if ok:
+                return f"Successfully stored credentials for '{username}' on '{service}'."
+            return "Error: Failed to store credentials."
+
+        elif a == "get_credential":
+            import backend.utils.browser_utils as bu
+            service = action.get("service", "")
+            username = action.get("username")
+            if not service:
+                return "Error: Missing service name."
+            creds = bu.get_credential(service, username)
+            if not creds:
+                return f"No credentials found for service '{service}'."
+            lines = [f"Credentials for '{service}':"]
+            for c in creds:
+                lines.append(f"  • Username: {c['username']}, Password: {c['password']}")
+            return "\n".join(lines)
+
+        elif a == "delete_credential":
+            import backend.utils.browser_utils as bu
+            service = action.get("service", "")
+            username = action.get("username", "")
+            if not service or not username:
+                return "Error: Missing service or username."
+            ok = bu.delete_credential(service, username)
+            if ok:
+                return f"Successfully deleted credentials for '{username}' on '{service}'."
+            return f"Error: No matching credentials found for '{username}' on '{service}' to delete."
+
+        elif a == "search_browser_history":
+            import backend.utils.browser_utils as bu
+            query = action.get("query", action.get("value", ""))
+            browser = action.get("browser", "chrome").lower().strip()
+            if not query:
+                return "Error: Missing search query."
+            results = bu.search_browser_history(query, browser)
+            if not results:
+                return f"No browser history entries found matching '{query}' in {browser}."
+            lines = [f"Recent History Matches in {browser}:"]
+            for r in results:
+                lines.append(f"  • {r['title']} - {r['url']} (Visited: {r['last_visit']}, Count: {r['visit_count']})")
+            return "\n".join(lines)
+
+        elif a == "send_email":
+            import backend.utils.comm_utils as cu
+            to = action.get("to", action.get("recipient", ""))
+            subject = action.get("subject", "No Subject")
+            body = action.get("body", action.get("content", ""))
+            if not to:
+                return "Error: Missing recipient address."
+            return cu.send_email(to, subject, body)
+
+        elif a == "draft_email":
+            import backend.utils.comm_utils as cu
+            to = action.get("to", action.get("recipient", ""))
+            subject = action.get("subject", "No Subject")
+            body = action.get("body", action.get("content", ""))
+            if not to:
+                return "Error: Missing recipient address."
+            return cu.draft_email(to, subject, body)
+
+        elif a == "fetch_emails":
+            import backend.utils.comm_utils as cu
+            limit = action.get("limit", action.get("count", 5))
+            try:
+                limit = int(limit)
+            except ValueError:
+                limit = 5
+            emails = cu.fetch_emails(limit)
+            if not emails:
+                return "No emails found or Outlook is unavailable."
+            lines = ["Recent Emails:"]
+            for em in emails:
+                lines.append(f"  • From: {em['sender']}\n    Subject: {em['subject']}\n    Time: {em['time']}\n    Preview: {em['body']}\n")
+            return "\n".join(lines)
+
+        elif a == "create_calendar_event":
+            import backend.utils.comm_utils as cu
+            subject = action.get("subject", action.get("title", ""))
+            start_time = action.get("start", action.get("start_time", ""))
+            duration = action.get("duration", action.get("duration_minutes", 30))
+            location = action.get("location", "")
+            body = action.get("body", action.get("description", ""))
+            
+            try:
+                duration = int(duration)
+            except ValueError:
+                duration = 30
+                
+            if not subject or not start_time:
+                return "Error: Missing calendar subject or start time."
+            return cu.create_calendar_event(subject, start_time, duration, location, body)
+
+        elif a == "list_calendar_events":
+            import backend.utils.comm_utils as cu
+            limit = action.get("limit", action.get("count", 10))
+            try:
+                limit = int(limit)
+            except ValueError:
+                limit = 10
+            events = cu.list_calendar_events(limit)
+            if not events:
+                return "No calendar events found."
+            lines = ["Calendar Events:"]
+            for ev in events:
+                lines.append(f"  • {ev['subject']} - {ev['start']} ({ev['duration']} mins) at {ev.get('location', 'no location')}")
+            return "\n".join(lines)
+
+        elif a == "delete_calendar_event":
+            import backend.utils.comm_utils as cu
+            subject = action.get("subject", action.get("title", ""))
+            if not subject:
+                return "Error: Missing event subject to delete."
+            return cu.delete_calendar_event(subject)
+
+        elif a == "get_active_notifications":
+            import backend.utils.comm_utils as cu
+            notifications = cu.get_active_notifications()
+            valid = [n for n in notifications if "error" not in n]
+            if not valid:
+                err_msg = next((n["error"] for n in notifications if "error" in n), "No active notifications.")
+                return f"Error or Status: {err_msg}"
+            lines = ["Active Notifications:"]
+            for n in valid:
+                lines.append(f"  • App: {n['app']}\n    Content: {', '.join(n['texts'])}")
+            return "\n".join(lines)
+
+        elif a == "compile_daily_briefing":
+            import backend.utils.comm_utils as cu
+            city = action.get("city", "New York")
+            
+            weather_desc = "Weather information unavailable."
+            try:
+                api_key = KEYS.get("weather", "")
+                if api_key:
+                    resp = requests.get(
+                        "https://api.openweathermap.org/data/2.5/weather",
+                        params={"q": city, "appid": api_key, "units": "metric"},
+                        timeout=10
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        desc = data["weather"][0]["description"]
+                        temp = data["main"]["temp"]
+                        feels = data["main"]["feels_like"]
+                        humid = data["main"]["humidity"]
+                        weather_desc = f"Weather in {city}: {desc}, {temp}°C (feels like {feels}°C), humidity {humid}%"
+                    else:
+                        weather_desc = f"Could not retrieve weather: {resp.text.strip()}"
+                else:
+                    weather_desc = "Weather API key not configured."
+            except Exception as e:
+                weather_desc = f"Error fetching weather: {e}"
+                
+            events = cu.list_calendar_events(limit=5)
+            events_desc = "No calendar events scheduled."
+            if events:
+                events_desc = "\n".join(f"  • {e['subject']} starting at {e['start']} ({e['duration']} mins) at {e.get('location', 'no location')}" for e in events)
+                
+            notifications = cu.get_active_notifications()
+            notif_desc = "No active notifications."
+            valid_notifs = [n for n in notifications if "error" not in n]
+            if valid_notifs:
+                notif_desc = "\n".join(f"  • [{n['app']}]: {', '.join(n['texts'])}" for n in valid_notifs)
+                
+            emails = cu.fetch_emails(limit=3)
+            emails_desc = "No new emails."
+            if emails:
+                emails_desc = "\n".join(f"  • From: {em['sender']} - Subject: {em['subject']} ({em['time']})" for em in emails)
+                
+            prompt = f"""You are J.A.R.V.I.S. Compile a friendly, personality-rich morning briefing summary using this raw data:
+
+WEATHER:
+{weather_desc}
+
+CALENDAR EVENTS:
+{events_desc}
+
+ACTIVE NOTIFICATIONS:
+{notif_desc}
+
+RECENT EMAILS:
+{emails_desc}
+
+Keep the summary structured, professional yet warm, and highlight any urgent meetings or notifications. Direct text response only, no JSON."""
+
+            try:
+                from backend.windows_agent import conversational_reply as _conv_reply
+                summary = _conv_reply(prompt)
+                # If conversational_reply failed or returned fallback/empty, use offline fallback
+                if not summary or summary.strip().startswith("I'm here."):
+                    raise Exception("Conversational reply returned fallback.")
+                return summary
+            except Exception as e:
+                return f"""JARVIS Daily Briefing Compiler (Offline Fallback):
+- Weather: {weather_desc}
+- Calendar: {events_desc}
+- Notifications: {notif_desc}
+- Emails: {emails_desc}"""
 
         # ── System ────────────────────────────────────────────────────────────
         elif a == "empty_recycle_bin":
@@ -1726,6 +2580,468 @@ def _execute_core(action: dict) -> str:
             except ImportError:
                 result = subprocess.run("systeminfo", shell=True, capture_output=True, text=True, timeout=15)
                 return result.stdout[:1500]
+
+        elif a == "get_battery_status":
+            try:
+                import psutil
+                batt = psutil.sensors_battery()
+                if batt is None:
+                    return "No battery detected (this system may be a desktop PC plug-in only)."
+                plugged = "charging/plugged in" if batt.power_plugged else "discharging/on battery"
+                left_str = "unknown"
+                if batt.secsleft == psutil.POWER_TIME_UNLIMITED:
+                    left_str = "unlimited (plugged in)"
+                elif batt.secsleft == psutil.POWER_TIME_UNKNOWN:
+                    left_str = "unknown"
+                else:
+                    h = batt.secsleft // 3600
+                    m = (batt.secsleft % 3600) // 60
+                    left_str = f"{h}h {m}m"
+                return f"Battery Level: {batt.percent}%\nStatus: {plugged}\nTime remaining: {left_str}"
+            except Exception as e:
+                return f"Error checking battery: {e}"
+
+        elif a == "get_resource_hogs":
+            try:
+                import psutil
+                import time
+                # Initialize CPU percent tracking
+                for proc in psutil.process_iter():
+                    try:
+                        proc.cpu_percent()
+                    except Exception:
+                        pass
+                time.sleep(0.1)
+                
+                processes = []
+                for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
+                    try:
+                        cpu_val = proc.cpu_percent()
+                        info = proc.info
+                        if not info.get('memory_info'):
+                            continue
+                        mem_mb = info['memory_info'].rss / (1024 * 1024)
+                        processes.append({
+                            'pid': info['pid'],
+                            'name': info['name'],
+                            'cpu': cpu_val,
+                            'mem_mb': mem_mb
+                        })
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
+                
+                cpu_hogs = sorted(processes, key=lambda x: x['cpu'], reverse=True)[:5]
+                mem_hogs = sorted(processes, key=lambda x: x['mem_mb'], reverse=True)[:5]
+                
+                cpu_lines = [f"  - {p['name']} (PID: {p['pid']}): {p['cpu']:.1f}% CPU" for p in cpu_hogs]
+                mem_lines = [f"  - {p['name']} (PID: {p['pid']}): {p['mem_mb']:.1f} MB" for p in mem_hogs]
+                
+                return (
+                    "Top 5 CPU Hogs:\n" + "\n".join(cpu_lines) + "\n\n" +
+                    "Top 5 RAM Hogs:\n" + "\n".join(mem_lines)
+                )
+            except Exception as e:
+                return f"Error getting resource hogs: {e}"
+
+        elif a == "connect_wifi":
+            name = action.get("name", action.get("value", ""))
+            if not name:
+                res = subprocess.run("netsh wlan show profiles", shell=True, capture_output=True, text=True)
+                return f"Available WiFi profiles on this system:\n{res.stdout.strip()}"
+            cmd = f'netsh wlan connect name="{name}"'
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if res.returncode == 0:
+                return f"WiFi connection request sent for profile '{name}'. Output: {res.stdout.strip()}"
+            else:
+                return f"Error connecting to WiFi profile '{name}': {res.stderr.strip() or res.stdout.strip()}"
+
+        elif a == "manage_bluetooth":
+            cmd_type = action.get("command", action.get("value", "list")).lower()
+            target_device = action.get("device", "")
+            
+            if cmd_type in ("list", "status"):
+                ps_script = 'Get-PnpDevice -Class Bluetooth | Where-Object { $_.Present } | Select-Object FriendlyName, Status | Format-Table -HideTableHeaders'
+                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+                devices_str = res.stdout.strip()
+                if not devices_str:
+                    return "No active Bluetooth devices or radios found."
+                return f"Active Bluetooth Devices:\n{devices_str}"
+                
+            elif cmd_type in ("enable", "disable"):
+                state = "Enable" if cmd_type == "enable" else "Disable"
+                ps_script = f'''
+                $dev = Get-PnpDevice -Class Bluetooth | Where-Object {{ $_.FriendlyName -like "*Bluetooth*Adapter*" -or $_.FriendlyName -like "*Bluetooth*Radio*" }} | Select-Object -First 1
+                if ($dev) {{
+                    {state}-PnpDevice -InstanceId $dev.InstanceId -Confirm:$false
+                    "{state}d Bluetooth adapter: " + $dev.FriendlyName
+                }} else {{
+                    "Error: No Bluetooth adapter device found."
+                }}
+                '''
+                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+                out = res.stdout.strip()
+                if "AccessDenied" in res.stderr or "Privilege" in res.stderr or "Access is denied" in out:
+                    return f"Error: Toggling Bluetooth radio requires Administrative privileges. (Stderr: {res.stderr.strip()})"
+                return out or res.stderr.strip()
+                
+            elif cmd_type in ("connect", "disconnect"):
+                if not target_device:
+                    return "Error: Missing target device name for connect/disconnect."
+                state = "Enable" if cmd_type == "connect" else "Disable"
+                ps_script = f'''
+                $dev = Get-PnpDevice -Class Bluetooth | Where-Object {{ $_.FriendlyName -like "*{target_device}*" }} | Select-Object -First 1
+                if ($dev) {{
+                    {state}-PnpDevice -InstanceId $dev.InstanceId -Confirm:$false
+                    "{cmd_type.capitalize()}ed device: " + $dev.FriendlyName
+                }} else {{
+                    "Error: Device '{target_device}' not found in paired Bluetooth devices."
+                }}
+                '''
+                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+                out = res.stdout.strip()
+                if "AccessDenied" in res.stderr or "Privilege" in res.stderr or "Access is denied" in out:
+                    return f"Error: Connecting/Disconnecting Bluetooth devices requires Administrative privileges. (Stderr: {res.stderr.strip()})"
+                return out or res.stderr.strip()
+                
+            else:
+                return f"Error: Unknown Bluetooth management command '{cmd_type}'."
+
+        elif a == "set_brightness":
+            val_str = action.get("value", "")
+            if val_str == "":
+                # Query brightness
+                ps_script = "(Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness).CurrentBrightness"
+                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+                out = res.stdout.strip()
+                if out.isdigit():
+                    return f"Current screen brightness: {out}%"
+                else:
+                    return f"Error querying screen brightness: {res.stderr.strip() or 'WMI brightness not supported on this monitor.'}"
+            else:
+                try:
+                    target = max(0, min(int(val_str), 100))
+                except ValueError:
+                    return f"Error: Invalid brightness value '{val_str}'."
+                
+                ps_script = f"Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{ Timeout = 1; Brightness = {target} }}"
+                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+                if res.returncode == 0:
+                    return f"Screen brightness successfully set to {target}%."
+                else:
+                    return f"Error setting screen brightness: {res.stderr.strip() or 'WMI brightness not supported on this monitor.'}"
+
+        elif a == "startup_manager":
+            cmd_type = action.get("command", action.get("value", "list")).lower()
+            name = action.get("name", "")
+            path = action.get("path", "")
+            
+            import winreg
+            reg_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            
+            if cmd_type == "list":
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_READ)
+                    count = winreg.QueryInfoKey(key)[1]
+                    entries = []
+                    for i in range(count):
+                        val_name, val_data, val_type = winreg.EnumValue(key, i)
+                        entries.append(f"  - {val_name}: {val_data}")
+                    winreg.CloseKey(key)
+                    if not entries:
+                        return "No startup applications registered under current user run key."
+                    return "Registered startup applications:\n" + "\n".join(entries)
+                except Exception as e:
+                    return f"Error listing startup apps: {e}"
+                    
+            elif cmd_type in ("enable", "add"):
+                if not name or not path:
+                    return "Error: Missing startup app name or executable path."
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_WRITE)
+                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, path)
+                    winreg.CloseKey(key)
+                    return f"Successfully enabled/added startup app: {name} ({path})"
+                except Exception as e:
+                    return f"Error enabling startup app: {e}"
+                    
+            elif cmd_type in ("disable", "delete", "remove"):
+                if not name:
+                    return "Error: Missing startup app name to disable."
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_WRITE)
+                    winreg.DeleteValue(key, name)
+                    winreg.CloseKey(key)
+                    return f"Successfully disabled/removed startup app: {name}"
+                except FileNotFoundError:
+                    return f"Startup app '{name}' was not found in the registry."
+                except Exception as e:
+                    return f"Error disabling startup app: {e}"
+            else:
+                return f"Error: Unknown startup manager command '{cmd_type}'."
+
+        elif a == "list_clipboard_history":
+            import backend.memory as memory
+            limit = 20
+            try:
+                limit_val = action.get("limit")
+                if limit_val is not None:
+                    limit = int(limit_val)
+            except Exception:
+                pass
+            
+            rows = memory.get_clipboard_history(limit)
+            if not rows:
+                return "Clipboard history is empty."
+            
+            lines = [f"  [{ts}] {content}" for content, ts in rows]
+            return "Clipboard History:\n" + "\n".join(lines)
+
+        elif a == "take_note":
+            content = action.get("content", action.get("value", ""))
+            category = action.get("category", "General").strip().capitalize()
+            if not content:
+                return "Error: Note content cannot be empty."
+                
+            home_dir = os.path.expanduser("~")
+            docs_dir = os.path.join(home_dir, "Documents")
+            if not os.path.exists(docs_dir):
+                docs_dir = home_dir
+                
+            notes_path = os.path.join(docs_dir, "notes.md")
+            import time as time_lib
+            timestamp = time_lib.strftime("%Y-%m-%d %H:%M:%S")
+            note_entry = f"\n## [{timestamp}] Category: {category}\n"
+            
+            lines = content.strip().split("\n")
+            for line in lines:
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                if line_str.startswith("-") or line_str.startswith("*"):
+                    note_entry += f"{line_str}\n"
+                else:
+                    note_entry += f"- {line_str}\n"
+                    
+            try:
+                os.makedirs(os.path.dirname(notes_path), exist_ok=True)
+                with open(notes_path, "a", encoding="utf-8") as f:
+                    f.write(note_entry)
+                return f"Successfully added note under category '{category}' to: {notes_path}"
+            except Exception as e:
+                return f"Error writing note to file: {e}"
+
+        elif a == "add_todo":
+            task = action.get("task", action.get("value", ""))
+            if not task:
+                return "Error: Todo task description cannot be empty."
+            import backend.memory as memory
+            if memory.add_todo(task):
+                try:
+                    import backend.hooks as hooks
+                    hooks.trigger_ui_refresh()
+                except Exception:
+                    pass
+                return f"Successfully added todo: {task}"
+            else:
+                return f"Error: Todo task '{task}' already exists or failed to add."
+
+        elif a == "list_todos":
+            import backend.memory as memory
+            todos = memory.list_todos()
+            if not todos:
+                return "No todos in your list."
+            lines = []
+            for t in todos:
+                status = "[x]" if t["completed"] else "[ ]"
+                lines.append(f"  {t['id']}. {status} {t['task']}")
+            return "Todo List:\n" + "\n".join(lines)
+
+        elif a == "mark_todo_complete":
+            task_id_or_name = action.get("task_id_or_name", action.get("id", action.get("value", "")))
+            if not task_id_or_name:
+                return "Error: Missing todo ID or description to complete."
+            import backend.memory as memory
+            if memory.mark_todo_complete(task_id_or_name):
+                try:
+                    import backend.hooks as hooks
+                    hooks.trigger_ui_refresh()
+                except Exception:
+                    pass
+                return f"Successfully marked todo '{task_id_or_name}' as completed."
+            else:
+                return f"Error: Todo '{task_id_or_name}' not found."
+
+        elif a == "delete_todo":
+            task_id_or_name = action.get("task_id_or_name", action.get("id", action.get("value", "")))
+            if not task_id_or_name:
+                return "Error: Missing todo ID or description to delete."
+            import backend.memory as memory
+            if memory.delete_todo(task_id_or_name):
+                try:
+                    import backend.hooks as hooks
+                    hooks.trigger_ui_refresh()
+                except Exception:
+                    pass
+                return f"Successfully deleted todo '{task_id_or_name}'."
+            else:
+                return f"Error: Todo '{task_id_or_name}' not found."
+
+        elif a == "start_pomodoro":
+            duration_minutes = action.get("duration_minutes", action.get("minutes"))
+            duration_seconds = action.get("duration_seconds", action.get("seconds", action.get("value")))
+            
+            if duration_minutes is not None:
+                duration = int(duration_minutes) * 60
+            elif duration_seconds is not None:
+                duration = int(duration_seconds)
+            else:
+                duration = 25 * 60 # default 25 minutes
+                
+            label = action.get("label", "Focus Session")
+            
+            if POMODORO_THREAD is not None:
+                POMODORO_CANCELLED = True
+                POMODORO_THREAD.join(timeout=2.0)
+                POMODORO_THREAD = None
+                
+            POMODORO_CANCELLED = False
+            POMODORO_THREAD = threading.Thread(target=_pomodoro_timer_loop, args=(duration, label), daemon=True)
+            POMODORO_THREAD.start()
+            return f"Successfully started Pomodoro timer for {duration // 60}m {duration % 60}s: '{label}'"
+
+        elif a == "stop_pomodoro":
+            if POMODORO_THREAD is not None:
+                POMODORO_CANCELLED = True
+                POMODORO_THREAD.join(timeout=2.0)
+                POMODORO_THREAD = None
+                return "Pomodoro timer stopped."
+            return "No active Pomodoro timer is running."
+
+        elif a == "smart_file_search":
+            query = action.get("query", action.get("value", ""))
+            ext = action.get("ext", action.get("extension", ""))
+            days = action.get("days", action.get("days_ago"))
+            recent = action.get("recent", False)
+            recycle_bin = action.get("recycle_bin", action.get("recycle", False))
+            restore_target = action.get("restore", "")
+            
+            if days is not None:
+                try:
+                    days = int(days)
+                except ValueError:
+                    days = None
+
+            import backend.utils.file_search as file_search
+            
+            if restore_target:
+                ok = file_search.restore_recycle_bin_item(restore_target)
+                if ok:
+                    return f"Successfully restored item '{restore_target}' from Recycle Bin."
+                else:
+                    return f"Error: Could not find or restore '{restore_target}' in Recycle Bin."
+
+            if recycle_bin:
+                items = file_search.get_recycle_bin_items()
+                if not items:
+                    return "Recycle Bin is empty."
+                lines = [f"  • {item['name']} ({item['type']}) - {item['path']}" for item in items]
+                return "Recycle Bin Items:\n" + "\n".join(lines)
+
+            if recent or (query == "recent" and not ext):
+                items = file_search.get_recent_files()
+                if not items:
+                    return "No recent files found."
+                lines = [f"  • {item['name']} (Accessed: {item['accessed_at']}) - {item['path']}" for item in items]
+                return "Recent Files:\n" + "\n".join(lines)
+
+            start_dir = action.get("path", action.get("directory", ""))
+            if not start_dir:
+                start_dir = os.path.expanduser("~")
+            elif not os.path.exists(start_dir):
+                return f"Error: Starting directory '{start_dir}' does not exist."
+                
+            min_size = action.get("min_size", action.get("size_min"))
+            max_size = action.get("max_size", action.get("size_max"))
+            
+            results = file_search.recursive_search_files(
+                start_dir=start_dir,
+                query=query if query != "recent" else None,
+                ext=ext,
+                days=days,
+                min_size=min_size,
+                max_size=max_size
+            )
+            
+            if not results:
+                filters_desc = []
+                if query: filters_desc.append(f"query: {query}")
+                if ext: filters_desc.append(f"extension: {ext}")
+                if days: filters_desc.append(f"modified within {days} days")
+                if min_size: filters_desc.append(f"min size: {min_size}")
+                if max_size: filters_desc.append(f"max size: {max_size}")
+                desc = ", ".join(filters_desc)
+                return f"No files matching search criteria ({desc}) found in '{start_dir}'."
+                
+            lines = []
+            for item in results:
+                size_mb = round(item["size_bytes"] / (1024 * 1024), 2)
+                lines.append(f"  • {item['name']} ({size_mb} MB, Modified: {item['modified_at']}) - {item['path']}")
+                
+            return f"Found {len(results)} matching files in '{start_dir}':\n" + "\n".join(lines)
+
+        elif a == "power_command":
+            type_val = action.get("type", "").lower()
+            delay = int(action.get("delay", 0))
+            
+            global ACTIVE_POWER_TIMERS
+            if 'ACTIVE_POWER_TIMERS' not in globals():
+                ACTIVE_POWER_TIMERS = {}
+                
+            def run_delayed_command(cmd_str):
+                subprocess.run(cmd_str, shell=True)
+                
+            if "power_timer" in ACTIVE_POWER_TIMERS:
+                try:
+                    ACTIVE_POWER_TIMERS["power_timer"].cancel()
+                except Exception:
+                    pass
+                del ACTIVE_POWER_TIMERS["power_timer"]
+                
+            if type_val == "abort":
+                subprocess.run("shutdown /a", shell=True)
+                return "Cancelled pending power commands (shutdown/restart aborted and custom timers cleared)."
+                
+            if type_val == "shutdown":
+                subprocess.run(f"shutdown /s /t {delay}", shell=True)
+                return f"Scheduled system shutdown in {delay} seconds."
+                
+            elif type_val == "restart":
+                subprocess.run(f"shutdown /r /t {delay}", shell=True)
+                return f"Scheduled system restart in {delay} seconds."
+                
+            elif type_val in ("sleep", "suspend"):
+                cmd = "rundll32.exe powrprof.dll,SetSuspendState 0,1,0"
+                if delay > 0:
+                    t = threading.Timer(delay, run_delayed_command, args=(cmd,))
+                    ACTIVE_POWER_TIMERS["power_timer"] = t
+                    t.start()
+                    return f"Scheduled system sleep (suspend) in {delay} seconds."
+                else:
+                    subprocess.run(cmd, shell=True)
+                    return "System putting to sleep (suspend) now."
+                    
+            elif type_val == "hibernate":
+                cmd = "rundll32.exe powrprof.dll,SetSuspendState 1,1,0"
+                if delay > 0:
+                    t = threading.Timer(delay, run_delayed_command, args=(cmd,))
+                    ACTIVE_POWER_TIMERS["power_timer"] = t
+                    t.start()
+                    return f"Scheduled system hibernation in {delay} seconds."
+                else:
+                    subprocess.run(cmd, shell=True)
+                    return "System putting to hibernation now."
+            else:
+                return f"Error: Unknown power command type '{type_val}'."
 
         elif a == "set_volume":
             level = max(0, min(int(v), 100))
@@ -1933,6 +3249,37 @@ Add-Type -MemberDefinition $code -Name WinMM -Namespace WinAPI -ErrorAction Stop
             except Exception as _cr_err:
                 log.debug("conversational_reply failed, falling back: %s", _cr_err)
             return f"Agent: {v}"
+
+        # ── Undo / Replay ─────────────────────────────────────────────────────
+        elif a == "undo_last_action":
+            import backend.memory as memory
+            last_action = memory.get_last_ledger_action()
+            if not last_action:
+                return "Error: No actions recorded in the ledger to undo."
+            undo_act = get_undo_action(last_action)
+            if not undo_act:
+                return f"Error: Cannot undo action '{last_action['action_type']}' (unsupported or irreversible)."
+            
+            res = execute(undo_act, command="Undo last action", record_in_history=False)
+            try:
+                memory.delete_last_ledger_action()
+            except Exception:
+                pass
+            return f"Successfully undid last action '{last_action['action_type']}'. Result: {res}"
+
+        elif a == "repeat_last_action":
+            import backend.memory as memory
+            last_action = memory.get_last_ledger_action()
+            if not last_action:
+                return "Error: No actions recorded in the ledger to repeat."
+            repeat_act = {
+                "action": last_action["action_type"],
+                "value": last_action["value"]
+            }
+            repeat_act.update(last_action["parameters"])
+            repeat_act.pop("old_value", None)
+            res = execute(repeat_act, command="Repeat last action", record_in_history=True)
+            return f"Successfully repeated last action '{last_action['action_type']}'. Result: {res}"
 
         else:
             return f"Unknown action: {a}"
