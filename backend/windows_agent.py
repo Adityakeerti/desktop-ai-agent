@@ -265,6 +265,11 @@ class ConversationMemory:
         if len(self.history) > self.max_history * 2:
             self.history.pop(0)
 
+    def add_result(self, result_str: str):
+        self.history.append(f"Execution Result: {result_str}")
+        if len(self.history) > self.max_history * 2:
+            self.history.pop(0)
+
     def get_history(self) -> list[str]:
         return list(self.history)
 
@@ -278,6 +283,115 @@ global_memory = ConversationMemory()
 # ──────────────────────────────────────────────────────────────
 # PROMPT BUILDER
 # ──────────────────────────────────────────────────────────────
+def get_available_actions_text(screen_w: int, screen_h: int, home_dir: str) -> str:
+    return f"""=== APP / WINDOW ===
+{{"action":"open_app","value":"notepad"}}                       - open an application (supports optional "count" or "times" parameter to launch multiple instances)
+{{"action":"open_app","value":"brave","url":"https://..."}}      - open browser at URL
+{{"action":"close_app","value":"notepad"}}                        - close application by name
+{{"action":"switch_window","value":"Chrome"}}                     - focus window by title substring
+{{"action":"maximize_window","value":"Notepad"}}                  - maximize window
+{{"action":"minimize_window","value":"Notepad"}}                  - minimize window
+{{"action":"get_active_window"}}                                  - get title of focused window
+{{"action":"focus_window","value":"Calculator"}}                  - bring window to foreground
+{{"action":"open_url","value":"https://youtube.com"}}             - open URL in default browser (supports optional "count" or "times" parameter to open multiple times)
+{{"action":"manage_tabs","app":"chrome","tab_action":"new_tab","count":1}} - manage tabs in a browser/app (tab_action options: new_tab, close_tab, next_tab, prev_tab) (supports optional "count" or "times" parameter for multiple tabs)
+{{"action":"tile_windows","layout":"left_right","apps":["chrome","notepad"]}} - tile ALREADY RUNNING application windows side-by-side or in a grid (layout options: left_right, top_bottom, grid) (does NOT open/launch apps)
+{{"action":"position_window","value":"notepad","monitor":0,"x":100,"y":100,"width":800,"height":500}} - position an ALREADY RUNNING application window on a specific monitor (does NOT open/launch apps)
+
+=== KEYBOARD / MOUSE ===
+{{"action":"type_text","value":"Hello World"}}                    - type text at current cursor
+{{"action":"press_keys","value":"ctrl+s"}}                        - press keyboard shortcut
+{{"action":"click_element","value":"Submit"}}                     - click UI element by name (optional "depth":N, default 5)
+{{"action":"click_at","x":500,"y":300}}                           - click at screen coordinates (max {screen_w - 1}×{screen_h - 1})
+{{"action":"right_click","x":500,"y":300}}                        - right-click at coordinates
+{{"action":"double_click","x":500,"y":300}}                       - double-click at coordinates
+{{"action":"scroll","direction":"down","amount":5}}               - scroll (up/down, amount 1-10)
+{{"action":"move_mouse","x":500,"y":300}}                         - move mouse to coordinates
+{{"action":"drag","from_x":100,"from_y":100,"to_x":400,"to_y":400}} - drag from→to
+
+=== SCREEN / MEDIA ===
+{{"action":"screenshot","path":"~/Desktop/shot.png"}} - save screenshot
+{{"action":"get_active_window"}}                                  - query focused window title
+
+=== FILES / FOLDERS ===
+{{"action":"create_file","path":"test.txt","content":"Hello"}}    - create file with content
+{{"action":"read_file","path":"test.txt"}}                        - read and return file content
+{{"action":"delete_file","path":"test.txt"}}                      - delete a file
+{{"action":"copy_file","src":"a.txt","dst":"b.txt"}}              - copy file
+{{"action":"move_file","src":"a.txt","dst":"b.txt"}}              - move/rename file
+{{"action":"rename_file","path":"a.txt","new_name":"b.txt"}}      - rename file
+{{"action":"create_folder","path":"MyFolder"}}                    - create directory
+{{"action":"delete_folder","path":"MyFolder"}}                    - delete directory tree
+{{"action":"list_files","path":"~/Desktop"}}                      - list files in directory
+{{"action":"smart_file_search","query":"notes","ext":".md","days":7,"path":"C:/...","min_size":"1MB","max_size":"10MB"}} - recursively search files with filters (ignores node_modules/venv for speed), get recent files, or list/restore Recycle Bin
+{{"action":"zip_files","files":["a.txt","b.txt"],"output":"out.zip"}} - compress files
+{{"action":"unzip_files","archive":"archive.zip","output":"extracted_folder"}} - decompress archive
+{{"action":"download_file","url":"https://...","path":"file.zip"}} - download a file
+{{"action":"run_code_snippet","code":"print('hello')","language":"python"}} - run code in sandbox
+{{"action":"read_file_tail","path":"log.txt","lines":50}} - read last N lines of a file
+{{"action":"git_command","command":"status","path":"repo_dir"}} - run git commands
+{{"action":"docker_command","command":"ps"}} - run docker commands
+{{"action":"http_request","url":"http://...","method":"GET"}} - send HTTP requests
+{{"action":"scrape_web_page","url":"http://...","selector":".price"}} - scrape web page content
+{{"action":"download_page_images","url":"http://...","output":"downloads"}} - download images from web page
+{{"action":"fill_web_form","url":"http://...","actions":[{{"selector":"#name","action":"fill","value":"text"}}]}} - autofill forms
+{{"action":"store_credential","service":"github","username":"user","password":"pw"}} - encrypt & store credential
+{{"action":"get_credential","service":"github"}} - retrieve stored credential
+{{"action":"delete_credential","service":"github","username":"user"}} - delete stored credential
+{{"action":"search_browser_history","query":"gmail","browser":"chrome"}} - search browser history (chrome, edge)
+{{"action":"send_email","to":"user@example.com","subject":"hello","body":"text"}} - send email via Outlook/SMTP
+{{"action":"draft_email","to":"user@example.com","subject":"hello","body":"text"}} - draft email in Outlook
+{{"action":"fetch_emails","limit":5}} - fetch recent emails from inbox
+{{"action":"create_calendar_event","subject":"Meeting","start":"2026-06-15 13:00","duration":30}} - schedule calendar event
+{{"action":"list_calendar_events","limit":10}} - list calendar events
+{{"action":"delete_calendar_event","subject":"Meeting"}} - delete calendar event
+{{"action":"get_active_notifications"}} - read active Windows desktop toast notifications
+{{"action":"compile_daily_briefing","city":"London"}} - compile daily briefing summary
+
+=== SYSTEM ===
+{{"action":"empty_recycle_bin"}}                                 - empty the recycle bin
+{{"action":"turn_off_wifi"}}                                     - turn off Wi-Fi
+{{"action":"connect_wifi","name":"HomeNetwork"}}                  - connect to saved WiFi network profile
+{{"action":"manage_bluetooth","command":"list"}}                 - bluetooth controls: list, enable, disable, connect, disconnect
+{{"action":"power_command","type":"sleep","delay":5}}            - power control: sleep, shutdown, restart, hibernate, abort
+{{"action":"run_command","value":"ipconfig /all"}}               - run shell/cmd command
+{{"action":"run_powershell","value":"Get-Process"}}              - run PowerShell command
+{{"action":"get_system_info"}}                                   - CPU/RAM/disk info
+{{"action":"get_battery_status"}}                                - get battery level and charging state
+{{"action":"get_resource_hogs"}}                                 - find top CPU/RAM consuming processes
+{{"action":"set_volume","value":70}}                             - set master volume 0-100
+{{"action":"set_brightness","value":50}}                         - set screen brightness 0-100
+{{"action":"startup_manager","command":"list"}}                  - manage startup apps: list, enable, disable
+{{"action":"get_clipboard"}}                                     - get clipboard text
+{{"action":"set_clipboard","value":"some text"}}                 - put text in clipboard
+{{"action":"paste_text"}}                                        - paste clipboard content (Ctrl+V)
+{{"action":"list_clipboard_history","limit":20}}                 - list recent clipboard entries
+
+=== WEB / SEARCH ===
+{{"action":"search_web","value":"python tutorial"}}              - Google search
+
+=== MESSAGING ===
+{{"action":"send_whatsapp","contact":"John","message":"Hello"}}  - send WhatsApp message
+
+=== WEATHER ===
+{{"action":"get_weather","city":"New York"}}                     - get current weather
+
+=== REMINDER / NOTES / TODOS ===
+{{"action":"set_reminder","message":"Call mom","seconds":300}}   - set a timed reminder
+{{"action":"take_note","content":"Meeting is at 2PM","category":"Work"}} - add note to notes.md
+{{"action":"add_todo","task":"Buy milk"}}                            - add task to todo list
+{{"action":"list_todos"}}                                           - view all todos
+{{"action":"mark_todo_complete","value":"Buy milk"}}                 - mark todo completed by ID or name
+{{"action":"delete_todo","value":"Buy milk"}}                       - delete todo by ID or name
+{{"action":"start_pomodoro","value":1500,"label":"Work"}}            - start a focus timer (seconds)
+{{"action":"stop_pomodoro"}}                                        - stop the active focus timer
+
+=== VOICE / CHAT ===
+{{"action":"say","value":"Task complete"}}                       - speak text via TTS
+{{"action":"reply","value":"I am an AI automation agent"}}       - answer conversational question
+"""
+
+
 def build_prompt(command: str, history: list = None) -> str:
     if command.startswith("__RAW_PROMPT__:"):
         return command[len("__RAW_PROMPT__:"):]
@@ -411,111 +525,7 @@ CRITICAL RULES:
 
 AVAILABLE ACTIONS (pick exactly one):
 
-=== APP / WINDOW ===
-{{"action":"open_app","value":"notepad"}}                       - open an application
-{{"action":"open_app","value":"brave","url":"https://..."}}      - open browser at URL
-{{"action":"close_app","value":"notepad"}}                        - close application by name
-{{"action":"switch_window","value":"Chrome"}}                     - focus window by title substring
-{{"action":"maximize_window","value":"Notepad"}}                  - maximize window
-{{"action":"minimize_window","value":"Notepad"}}                  - minimize window
-{{"action":"get_active_window"}}                                  - get title of focused window
-{{"action":"focus_window","value":"Calculator"}}                  - bring window to foreground
-{{"action":"open_url","value":"https://youtube.com"}}             - open URL in default browser
-{{"action":"tile_windows","layout":"left_right","apps":["chrome","notepad"]}} - tile ALREADY RUNNING application windows side-by-side or in a grid (layout options: left_right, top_bottom, grid) (does NOT open/launch apps)
-{{"action":"position_window","value":"notepad","monitor":0,"x":100,"y":100,"width":800,"height":500}} - position an ALREADY RUNNING application window on a specific monitor (does NOT open/launch apps)
-
-=== KEYBOARD / MOUSE ===
-{{"action":"type_text","value":"Hello World"}}                    - type text at current cursor
-{{"action":"press_keys","value":"ctrl+s"}}                        - press keyboard shortcut
-{{"action":"click_element","value":"Submit"}}                     - click UI element by name (optional "depth":N, default 5)
-{{"action":"click_at","x":500,"y":300}}                           - click at screen coordinates (max {screen_w - 1}×{screen_h - 1})
-{{"action":"right_click","x":500,"y":300}}                        - right-click at coordinates
-{{"action":"double_click","x":500,"y":300}}                       - double-click at coordinates
-{{"action":"scroll","direction":"down","amount":5}}               - scroll (up/down, amount 1-10)
-{{"action":"move_mouse","x":500,"y":300}}                         - move mouse to coordinates
-{{"action":"drag","from_x":100,"from_y":100,"to_x":400,"to_y":400}} - drag from→to
-
-=== SCREEN / MEDIA ===
-{{"action":"screenshot","path":"~/Desktop/shot.png"}} - save screenshot
-{{"action":"get_active_window"}}                                  - query focused window title
-
-=== FILES / FOLDERS ===
-{{"action":"create_file","path":"test.txt","content":"Hello"}}    - create file with content
-{{"action":"read_file","path":"test.txt"}}                        - read and return file content
-{{"action":"delete_file","path":"test.txt"}}                      - delete a file
-{{"action":"copy_file","src":"a.txt","dst":"b.txt"}}              - copy file
-{{"action":"move_file","src":"a.txt","dst":"b.txt"}}              - move/rename file
-{{"action":"rename_file","path":"a.txt","new_name":"b.txt"}}      - rename file
-{{"action":"create_folder","path":"MyFolder"}}                    - create directory
-{{"action":"delete_folder","path":"MyFolder"}}                    - delete directory tree
-{{"action":"list_files","path":"~/Desktop"}}                      - list files in directory
-{{"action":"smart_file_search","query":"notes","ext":".md","days":7,"path":"C:/...","min_size":"1MB","max_size":"10MB"}} - recursively search files with filters (ignores node_modules/venv for speed), get recent files, or list/restore Recycle Bin
-{{"action":"zip_files","files":["a.txt","b.txt"],"output":"out.zip"}} - compress files
-{{"action":"unzip_files","archive":"archive.zip","output":"extracted_folder"}} - decompress archive
-{{"action":"download_file","url":"https://...","path":"file.zip"}} - download a file
-{{"action":"run_code_snippet","code":"print('hello')","language":"python"}} - run code in sandbox
-{{"action":"read_file_tail","path":"log.txt","lines":50}} - read last N lines of a file
-{{"action":"git_command","command":"status","path":"repo_dir"}} - run git commands
-{{"action":"docker_command","command":"ps"}} - run docker commands
-{{"action":"http_request","url":"http://...","method":"GET"}} - send HTTP requests
-{{"action":"scrape_web_page","url":"http://...","selector":".price"}} - scrape web page content
-{{"action":"download_page_images","url":"http://...","output":"downloads"}} - download images from web page
-{{"action":"fill_web_form","url":"http://...","actions":[{{"selector":"#name","action":"fill","value":"text"}}]}} - autofill forms
-{{"action":"store_credential","service":"github","username":"user","password":"pw"}} - encrypt & store credential
-{{"action":"get_credential","service":"github"}} - retrieve stored credential
-{{"action":"delete_credential","service":"github","username":"user"}} - delete stored credential
-{{"action":"search_browser_history","query":"gmail","browser":"chrome"}} - search browser history (chrome, edge)
-{{"action":"send_email","to":"user@example.com","subject":"hello","body":"text"}} - send email via Outlook/SMTP
-{{"action":"draft_email","to":"user@example.com","subject":"hello","body":"text"}} - draft email in Outlook
-{{"action":"fetch_emails","limit":5}} - fetch recent emails from inbox
-{{"action":"create_calendar_event","subject":"Meeting","start":"2026-06-15 13:00","duration":30}} - schedule calendar event
-{{"action":"list_calendar_events","limit":10}} - list calendar events
-{{"action":"delete_calendar_event","subject":"Meeting"}} - delete calendar event
-{{"action":"get_active_notifications"}} - read active Windows desktop toast notifications
-{{"action":"compile_daily_briefing","city":"London"}} - compile daily briefing summary
-
-=== SYSTEM ===
-{{"action":"empty_recycle_bin"}}                                 - empty the recycle bin
-{{"action":"turn_off_wifi"}}                                     - turn off Wi-Fi
-{{"action":"connect_wifi","name":"HomeNetwork"}}                  - connect to saved WiFi network profile
-{{"action":"manage_bluetooth","command":"list"}}                 - bluetooth controls: list, enable, disable, connect, disconnect
-{{"action":"power_command","type":"sleep","delay":5}}            - power control: sleep, shutdown, restart, hibernate, abort
-{{"action":"run_command","value":"ipconfig /all"}}               - run shell/cmd command
-{{"action":"run_powershell","value":"Get-Process"}}              - run PowerShell command
-{{"action":"get_system_info"}}                                   - CPU/RAM/disk info
-{{"action":"get_battery_status"}}                                - get battery level and charging state
-{{"action":"get_resource_hogs"}}                                 - find top CPU/RAM consuming processes
-{{"action":"set_volume","value":70}}                             - set master volume 0-100
-{{"action":"set_brightness","value":50}}                         - set screen brightness 0-100
-{{"action":"startup_manager","command":"list"}}                  - manage startup apps: list, enable, disable
-{{"action":"get_clipboard"}}                                     - get clipboard text
-{{"action":"set_clipboard","value":"some text"}}                 - put text in clipboard
-{{"action":"paste_text"}}                                        - paste clipboard content (Ctrl+V)
-{{"action":"list_clipboard_history","limit":20}}                 - list recent clipboard entries
-
-=== WEB / SEARCH ===
-{{"action":"search_web","value":"python tutorial"}}              - Google search
-
-=== MESSAGING ===
-{{"action":"send_whatsapp","contact":"John","message":"Hello"}}  - send WhatsApp message
-
-=== WEATHER ===
-{{"action":"get_weather","city":"New York"}}                     - get current weather
-
-=== REMINDER / NOTES / TODOS ===
-{{"action":"set_reminder","message":"Call mom","seconds":300}}   - set a timed reminder
-{{"action":"take_note","content":"Meeting is at 2PM","category":"Work"}} - add note to notes.md
-{{"action":"add_todo","task":"Buy milk"}}                            - add task to todo list
-{{"action":"list_todos"}}                                           - view all todos
-{{"action":"mark_todo_complete","value":"Buy milk"}}                 - mark todo completed by ID or name
-{{"action":"delete_todo","value":"Buy milk"}}                       - delete todo by ID or name
-{{"action":"start_pomodoro","value":1500,"label":"Work"}}            - start a focus timer (seconds)
-{{"action":"stop_pomodoro"}}                                        - stop the active focus timer
-
-=== VOICE / CHAT ===
-{{"action":"say","value":"Task complete"}}                       - speak text via TTS
-{{"action":"reply","value":"I am an AI automation agent"}}       - answer conversational question
-
+{get_available_actions_text(screen_w, screen_h, home_dir)}
 === MACROS ===
 {{"action":"create_macro","name":"morning routine","steps":["open notepad","open paint"]}} - create a new macro/skill from scratch with specified steps
 {{"action":"edit_macro","name":"coding environment","instruction":"add 'open vscode' to it"}} - edit an existing macro/skill using natural language instructions
@@ -651,56 +661,80 @@ def _parse_json(text: str) -> dict:
         raise
 
 
-def ask_ollama(command: str, history: list = None) -> dict:
+def ask_ollama(command: str, history: list = None) -> dict | str:
     """Local Ollama — primary provider, runs gemma4:e4b entirely offline."""
     base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+    is_raw = command.startswith("__RAW_PROMPT__:")
+    prompt_content = build_prompt(command, history)
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt_content}],
+        "temperature": 0.7 if is_raw else 0,
+    }
+    if not is_raw:
+        payload["response_format"] = {"type": "json_object"}
+
     resp = requests.post(
         f"{base_url}/v1/chat/completions",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": build_prompt(command, history)}],
-            "temperature": 0,
-            "response_format": {"type": "json_object"}
-        },
+        json=payload,
         timeout=60,
     )
     resp.raise_for_status()
-    return _parse_json(resp.json()["choices"][0]["message"]["content"])
+    content = resp.json()["choices"][0]["message"]["content"]
+    if is_raw:
+        return content
+    return _parse_json(content)
 
 
-def ask_ollama_cloud(command: str, history: list = None) -> dict:
+def ask_ollama_cloud(command: str, history: list = None) -> dict | str:
     """Ollama Cloud — proxies through local client to the datacenter."""
     base_url = os.getenv("OLLAMA_CLOUD_BASE_URL", "http://localhost:11434")
     model = os.getenv("OLLAMA_CLOUD_MODEL", "gemma4:31b-cloud")
+    is_raw = command.startswith("__RAW_PROMPT__:")
+    prompt_content = build_prompt(command, history)
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt_content}],
+        "temperature": 0.7 if is_raw else 0,
+    }
+    if not is_raw:
+        payload["response_format"] = {"type": "json_object"}
+
     resp = requests.post(
         f"{base_url}/v1/chat/completions",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": build_prompt(command, history)}],
-            "temperature": 0,
-            "response_format": {"type": "json_object"}
-        },
+        json=payload,
         timeout=60,
     )
     resp.raise_for_status()
-    return _parse_json(resp.json()["choices"][0]["message"]["content"])
+    content = resp.json()["choices"][0]["message"]["content"]
+    if is_raw:
+        return content
+    return _parse_json(content)
 
 
-def ask_github(command: str, history: list = None) -> dict:
+def ask_github(command: str, history: list = None) -> dict | str:
     """GitHub Models (gpt-4o-mini) — last resort cloud fallback."""
+    is_raw = command.startswith("__RAW_PROMPT__:")
+    prompt_content = build_prompt(command, history)
+    
     resp = requests.post(
         "https://models.inference.ai.azure.com/chat/completions",
         headers={"Authorization": f"Bearer {KEYS['github']}"},
         json={
             "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": build_prompt(command, history)}],
-            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt_content}],
+            "temperature": 0.7 if is_raw else 0,
         },
         timeout=30,
     )
     resp.raise_for_status()
-    return _parse_json(resp.json()["choices"][0]["message"]["content"])
+    content = resp.json()["choices"][0]["message"]["content"]
+    if is_raw:
+        return content
+    return _parse_json(content)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -945,7 +979,6 @@ def _build_react_step_prompt(
     if history:
         history_str = "SESSION CONTEXT:\n" + "\n".join(history[-12:]) + "\n\n"
 
-    # Reuse the full action catalogue from build_prompt but abbreviated here
     return f"""You are {_agent_name}, a Windows automation agent executing a multi-step plan.
 
 ORIGINAL USER GOAL: "{original_goal}"
@@ -967,67 +1000,8 @@ CRITICAL RULES:
 7. CRITICAL: The "tile_windows" and "position_window" actions require target applications to be already running. They do NOT open/launch apps. If the user wants to tile/position apps that are not open, you MUST first open them using "open_app" (one by one) before tiling.
 
 AVAILABLE ACTIONS (same as normal agent):
-{{"action":"tile_windows","layout":"left_right","apps":["chrome","notepad"]}}
-{{"action":"position_window","value":"notepad","monitor":0,"x":100,"y":100,"width":800,"height":500}}
-{{"action":"open_app","value":"chrome","url":"https://..."}}
-{{"action":"open_url","value":"https://..."}}
-{{"action":"search_web","value":"query"}}
-{{"action":"run_powershell","value":"command"}}
-{{"action":"run_command","value":"cmd"}}
-{{"action":"get_system_info"}}
-{{"action":"connect_wifi","name":"..."}}
-{{"action":"manage_bluetooth","command":"..."}}
-{{"action":"power_command","type":"sleep","delay":5}}
-{{"action":"set_brightness","value":50}}
-{{"action":"startup_manager","command":"list"}}
-{{"action":"get_battery_status"}}
-{{"action":"get_resource_hogs"}}
-{{"action":"screenshot","path":"{home_dir}/Desktop/shot.png"}}
-{{"action":"read_file","path":"..."}}
-{{"action":"create_file","path":"...","content":"..."}}
-{{"action":"list_files","path":"..."}}
-{{"action":"smart_file_search","query":"...","ext":".pdf","days":7,"path":"C:/...","min_size":"1MB","max_size":"10MB"}}
-{{"action":"zip_files","files":["..."],"output":"..."}}
-{{"action":"unzip_files","archive":"...","output":"..."}}
-{{"action":"run_code_snippet","code":"...","language":"..."}}
-{{"action":"read_file_tail","path":"...","lines":50}}
-{{"action":"git_command","command":"...","path":"..."}}
-{{"action":"docker_command","command":"..."}}
-{{"action":"http_request","url":"...","method":"..."}}
-{{"action":"scrape_web_page","url":"...","selector":"..."}}
-{{"action":"download_page_images","url":"...","output":"..."}}
-{{"action":"fill_web_form","url":"...","actions":[]}}
-{{"action":"store_credential","service":"...","username":"...","password":"..."}}
-{{"action":"get_credential","service":"...","username":"..."}}
-{{"action":"delete_credential","service":"...","username":"..."}}
-{{"action":"search_browser_history","query":"...","browser":"..."}}
-{{"action":"send_email","to":"...","subject":"...","body":"..."}}
-{{"action":"draft_email","to":"...","subject":"...","body":"..."}}
-{{"action":"fetch_emails","limit":5}}
-{{"action":"create_calendar_event","subject":"...","start":"...","duration":30}}
-{{"action":"list_calendar_events","limit":10}}
-{{"action":"delete_calendar_event","subject":"..."}}
-{{"action":"get_active_notifications"}}
-{{"action":"compile_daily_briefing","city":"..."}}
-{{"action":"type_text","value":"..."}}
-{{"action":"press_keys","value":"ctrl+c"}}
-{{"action":"click_element","value":"..."}}
-{{"action":"get_clipboard"}}
-{{"action":"set_clipboard","value":"..."}}
-{{"action":"list_clipboard_history","limit":20}}
-{{"action":"take_note","content":"...","category":"..."}}
-{{"action":"add_todo","task":"..."}}
-{{"action":"list_todos"}}
-{{"action":"mark_todo_complete","value":"..."}}
-{{"action":"delete_todo","value":"..."}}
-{{"action":"start_pomodoro","value":1500,"label":"..."}}
-{{"action":"stop_pomodoro"}}
-{{"action":"send_whatsapp","contact":"...","message":"..."}}
-{{"action":"get_weather","city":"..."}}
-{{"action":"set_volume","value":70}}
-{{"action":"say","value":"..."}}
-{{"action":"reply","value":"..."}}
-{{"action":"done","value":"<completion summary>"}}
+{get_available_actions_text(screen_w, screen_h, home_dir)}
+{{"action":"done","value":"<completion summary>"}} - declare that the goal is fully achieved
 
 RESPOND WITH ONLY THE JSON OBJECT."""
 
@@ -1747,9 +1721,11 @@ def _execute_core(action: dict, command: str = "") -> str:
         elif a == "open_app":
             app_path = _resolve_app_path(str(v))
             url = action.get("url", "")
+            count = int(action.get("count", action.get("times", 1)))
             
             # Check if app is already running and has a visible window (Phase 1 Task 1.2)
-            if not url:
+            # Only do focus logic if count is 1
+            if not url and count == 1:
                 try:
                     from backend.utils.window_utils import app_state_detection, focus_window_hwnd
                     existing_hwnd = app_state_detection(str(v))
@@ -1769,18 +1745,15 @@ def _execute_core(action: dict, command: str = "") -> str:
 
             if needs_search:
                 # ── Windows Search fallback (Fix #3) ──────────────────────
-                # Poll for the Start Menu / Search window instead of blind sleep
                 try:
                     import win32gui
                     pyautogui.press("win")
-                    # Wait for Start Menu / Search to become foreground (up to 3s)
                     search_ready = False
-                    for _ in range(30):  # 30 × 0.1s = 3s
+                    for _ in range(30):
                         time.sleep(0.1)
                         try:
                             fg = win32gui.GetForegroundWindow()
                             cls_name = win32gui.GetClassName(fg)
-                            # Start Menu class names across Windows versions
                             if cls_name in ("Windows.UI.Core.CoreWindow",
                                             "XamlExplorerHostIslandWindow",
                                             "SearchUI", "Cortana"):
@@ -1789,22 +1762,31 @@ def _execute_core(action: dict, command: str = "") -> str:
                         except Exception:
                             pass
                     if not search_ready:
-                        time.sleep(0.5)  # last-resort grace period
+                        time.sleep(0.5)
                     pyautogui.write(str(v), interval=0.02)
                     time.sleep(0.8)
                     pyautogui.press("enter")
+                    for _ in range(count - 1):
+                        time.sleep(0.5)
+                        pyautogui.press("win")
+                        time.sleep(0.5)
+                        pyautogui.write(str(v), interval=0.02)
+                        time.sleep(0.8)
+                        pyautogui.press("enter")
                 except Exception as e:
                     return f"Windows Search fallback failed: {e}"
-                return f"Opened via Windows Search: {v}"
+                return f"Opened via Windows Search: {v} ({count} times)"
             else:
-                if app_path.startswith("start "):
-                    subprocess.Popen(app_path + (f' "{url}"' if url else ""), shell=True)
-                else:
-                    if url:
-                        subprocess.Popen([app_path.strip('"'), url])
+                for _ in range(count):
+                    if app_path.startswith("start "):
+                        subprocess.Popen(app_path + (f' "{url}"' if url else ""), shell=True)
                     else:
-                        subprocess.Popen([app_path.strip('"')])
-                return f"Opened: {v}" + (f" at {url}" if url else "")
+                        if url:
+                            subprocess.Popen([app_path.strip('"'), url])
+                        else:
+                            subprocess.Popen([app_path.strip('"')])
+                    time.sleep(0.1)
+                return f"Opened: {v}" + (f" at {url}" if url else "") + (f" ({count} times)" if count > 1 else "")
 
         elif a == "close_app":
             app_name = APP_PATHS.get(str(v).lower(), v)
@@ -1819,8 +1801,11 @@ def _execute_core(action: dict, command: str = "") -> str:
             url = str(v)
             if not url.startswith("http"):
                 url = "https://" + url
-            subprocess.Popen(f'start "" "{url}"', shell=True)
-            return f"Opened URL: {url}"
+            count = int(action.get("count", action.get("times", 1)))
+            for _ in range(count):
+                subprocess.Popen(f'start "" "{url}"', shell=True)
+                time.sleep(0.1)
+            return f"Opened URL: {url}" + (f" ({count} times)" if count > 1 else "")
 
         elif a == "switch_window":
             wins = gw.getWindowsWithTitle(str(v))
@@ -1883,8 +1868,12 @@ def _execute_core(action: dict, command: str = "") -> str:
         elif a == "manage_tabs":
             app = str(action.get("app", v or "chrome"))
             tab_action = str(action.get("tab_action", "new_tab"))
+            count = int(action.get("count", action.get("times", 1)))
             from backend.utils.window_utils import manage_app_tabs
-            return manage_app_tabs(app, tab_action)
+            for _ in range(count):
+                manage_app_tabs(app, tab_action)
+                time.sleep(0.05)
+            return f"Executed tab action '{tab_action}' on '{app}' {count} times."
 
         # ── Keyboard / Mouse ──────────────────────────────────────────────────
         elif a == "type_text":
@@ -2198,11 +2187,15 @@ def _execute_core(action: dict, command: str = "") -> str:
 
         elif a == "git_command":
             import shlex
-            cmd_str = action.get("command", action.get("args", action.get("value", "")))
+            cmd_str = str(action.get("command", action.get("args", action.get("value", "")))).strip()
             repo_dir = action.get("path", action.get("directory", os.getcwd()))
             if not cmd_str:
                 return "Error: Missing git command."
             
+            # Remove leading 'git ' prefix if the user/LLM included it, as 'git' is added programmatically.
+            if cmd_str.lower().startswith("git "):
+                cmd_str = cmd_str[4:].strip()
+                
             repo_dir = os.path.expandvars(os.path.expanduser(str(repo_dir)))
             if not os.path.exists(repo_dir):
                 return f"Error: Directory '{repo_dir}' does not exist."
@@ -2225,9 +2218,13 @@ def _execute_core(action: dict, command: str = "") -> str:
 
         elif a == "docker_command":
             import shlex
-            cmd_str = action.get("command", action.get("args", action.get("value", "")))
+            cmd_str = str(action.get("command", action.get("args", action.get("value", "")))).strip()
             if not cmd_str:
                 return "Error: Missing docker command."
+                
+            # Remove leading 'docker ' prefix if user/LLM included it, as 'docker' is added programmatically.
+            if cmd_str.lower().startswith("docker "):
+                cmd_str = cmd_str[7:].strip()
                 
             cmd = ["docker"]
             cmd.extend(shlex.split(cmd_str))
@@ -2512,7 +2509,7 @@ ACTIVE NOTIFICATIONS:
 RECENT EMAILS:
 {emails_desc}
 
-Keep the summary structured, professional yet warm, and highlight any urgent meetings or notifications. Direct text response only, no JSON."""
+Keep the summary structured, professional yet warm, and highlight any urgent meetings or notifications. Mention "Daily Briefing" in your output response. Direct text response only, no JSON."""
 
             try:
                 from backend.windows_agent import conversational_reply as _conv_reply
@@ -3582,6 +3579,10 @@ def run_test_batch(filepath: str):
                 global_memory.add_agent(action)
                 print(f"  ✓ Got action: {action['action']}")
                 result = execute(action, command)
+                try:
+                    global_memory.add_result(result)
+                except Exception:
+                    pass
                 print(f"  ↳ {result}")
                 with open(EXECUTION_LOG_PATH, "a", encoding="utf-8") as _f:
                     _f.write(json.dumps({"command": command, "action_taken": action, "correct": None, "correct_action": None}) + "\n")
@@ -3744,6 +3745,10 @@ def main():
                         continue
                         
                 result = execute(action, command)
+                try:
+                    global_memory.add_result(result)
+                except Exception:
+                    pass
                 print(f"  ↳ {result}")
                 if result.startswith("Unknown action:"):
                     speak("I don't have that capability yet. Logged for future build.")
@@ -3785,7 +3790,12 @@ def main():
                     except Exception:
                         pass
             else:
-                speak("Sorry, all AI providers are down right now.")
+                err_msg = "Error: All LLM providers failed to process the command (they may be down or blocked by content moderation)."
+                print(f"  ↳ {err_msg}")
+                try:
+                    global_memory.add_result(err_msg)
+                except Exception:
+                    pass
 
         except sr.WaitTimeoutError:
             print("  [VOICE] No speech detected, try again.")
